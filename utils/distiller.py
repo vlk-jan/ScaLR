@@ -28,6 +28,11 @@ from torch.utils.tensorboard import SummaryWriter
 # is estimated on a random subset instead.
 DIVERSITY_SAMPLE = 2048
 
+# Consecutive-ish non-finite losses tolerated in one epoch before giving up. A
+# handful is a transient overflow worth skipping; hundreds means the run is dead
+# and should not keep a multi-day allocation busy pretending otherwise.
+MAX_NONFINITE = 50
+
 AMP_DTYPES = {"fp16": torch.float16, "bf16": torch.bfloat16}
 
 
@@ -184,11 +189,13 @@ class Distiller:
         # Log frequency
         print_freq = np.max((len(loader) // 10, 1))
 
-        # Stat.
+        # Stat. Tensors from the start, so that a logging point reached before
+        # any finite step still has something gatherable.
         device = torch.device("cuda", self.rank) if self.rank is not None else "cuda"
         running_loss, running_total, running_div_k, running_div_q = (
             torch.zeros((), device=device) for _ in range(4)
         )
+        nonfinite = 0
 
         # Loop over mini-batches
         if self.rank == 0 or self.rank is None:
@@ -223,10 +230,33 @@ class Distiller:
                 q = torch.cat(q, dim=0)
             # Distillation loss, in float32 (see distill_loss)
             loss, distill, div_k, div_q = self.distill_loss(k, q)
-            running_loss += distill
-            running_total += loss.detach()
-            running_div_k += div_k
-            running_div_q += div_q
+
+            # A non-finite loss means the forward pass overflowed -- under fp16
+            # the student's activations can leave the float16 range entirely,
+            # and the gradient scaler does not help because it only inspects
+            # gradients, by which point the loss is already NaN. Stepping the
+            # optimizer here would poison the weights permanently, and the run
+            # would carry on to the end looking like it had trained.
+            finite = bool(torch.isfinite(loss))
+            if finite:
+                running_loss += distill
+                running_total += loss.detach()
+                running_div_k += div_k
+                running_div_q += div_q
+            else:
+                nonfinite += 1
+                if nonfinite in (1, 10) or nonfinite % 100 == 0:
+                    warnings.warn(
+                        f"Non-finite loss at epoch {self.current_epoch} it {it} "
+                        f"({nonfinite} so far this epoch); skipping the step. "
+                        "If this persists, use --bf16 rather than --fp16."
+                    )
+                if nonfinite >= MAX_NONFINITE:
+                    raise RuntimeError(
+                        f"{nonfinite} non-finite losses in epoch "
+                        f"{self.current_epoch}; aborting instead of burning the "
+                        "rest of the allocation on poisoned weights."
+                    )
 
             # Logs
             if it % print_freq == print_freq - 1 or it == len(loader) - 1:
@@ -255,8 +285,13 @@ class Distiller:
                             header + "/lr", self.optim.param_groups[0]["lr"], step
                         )
 
-            # Gradient step
+            # Gradient step. The scheduler advances either way, so that skipping
+            # a poisoned step does not shift the whole LR schedule.
             self.optim.zero_grad(set_to_none=True)
+            if not finite:
+                if self.scheduler is not None:
+                    self.scheduler.step()
+                continue
             if self.scaler is not None:
                 self.scaler.scale(loss).backward()
                 self.scaler.step(self.optim)
