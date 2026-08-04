@@ -1,0 +1,23 @@
+#!/bin/bash
+
+#SBATCH --nodes=1                                   # 1 node
+#SBATCH --ntasks-per-node=1                         # 1 task per node
+#SBATCH --time=21-00:00:00                          # time limits: 21 days (est. ~13 days of compute)
+#SBATCH --error=slurm/out/v4_err.out                # standard error file
+#SBATCH --output=slurm/out/v4_std.out               # standard output file
+#SBATCH --partition=amdgpuextralong                 # partition name (21 day limit)
+#SBATCH --cpus-per-task=64                          # number of CPUs
+#SBATCH --gres=gpu:4                                # number of GPUs
+#SBATCH --mem=128G                                  # set memory requirement
+#SBATCH --mail-user=vlkjan6@fel.cvut.cz             # where send info about job
+#SBATCH --mail-type=ALL                             # what to send, valid type values are NONE, BEGIN, END, FAIL, REQUEUE, ALL
+
+# Full retrain from scratch with the fixed DINOv3 teacher:
+#   - forward_get_last_n now threads RoPE through every block (was position-blind)
+#   - register index derived from n_storage_tokens
+#   - config feat: "x" (post-norm) instead of "x_pre_norm" (outlier-collapsed targets)
+# No --restart: the teacher's output distribution changed completely, so warm-starting
+# from full_3.pth would begin from weights fitted to a degenerate target.
+
+source .env
+python distill.py --config configs/pretrain/WI_768_pretrain.yaml --log_path logs/pretraining/full_v4 --dataset robotics --path_dataset /mnt/personal/vlkjan6/setprop --multiprocessing-distributed --fp16

@@ -1,0 +1,26 @@
+#!/bin/bash
+
+#SBATCH --nodes=1                                   # 1 node
+#SBATCH --ntasks-per-node=1                         # 1 task per node
+#SBATCH --time=3-00:00:00                           # time limits: 3 days (est. ~1.7 days of compute)
+#SBATCH --error=slurm/out/v4h200_err.out            # standard error file
+#SBATCH --output=slurm/out/v4h200_std.out           # standard output file
+#SBATCH --partition=h200long                        # partition name (3 day limit)
+#SBATCH --cpus-per-task=62                          # number of CPUs (node has 124 effective)
+#SBATCH --gres=gpu:4                                # number of GPUs
+#SBATCH --mem=512G                                  # set memory requirement
+#SBATCH --mail-user=vlkjan6@fel.cvut.cz             # where send info about job
+#SBATCH --mail-type=ALL                             # what to send, valid type values are NONE, BEGIN, END, FAIL, REQUEUE, ALL
+
+# Full retrain from scratch with the fixed DINOv3 teacher, on 4x H200 NVL.
+#   - forward_get_last_n now threads RoPE through every block (was position-blind)
+#   - register index derived from n_storage_tokens
+#   - feat: "x" (post-norm) instead of "x_pre_norm" (outlier-collapsed targets)
+# Measured 7.73 samples/s/GPU at batch 4 (vs 1.03 on A100 at batch 1) => ~1.65 h/epoch.
+# Global batch 16 (4/GPU), so lr scaled linearly 0.002 -> 0.008 and iter_warmup 3500 -> 1500.
+# No --restart: this is a fresh run, and the teacher's output distribution changed
+# completely, so warm-starting from full_3.pth would start from weights fitted to a
+# degenerate target.
+
+source .h200_env
+python distill.py --config configs/pretrain/WI_768_h200.yaml --log_path logs/pretraining/full_v4 --dataset robotics --path_dataset /mnt/personal/vlkjan6/setprop --multiprocessing-distributed --fp16

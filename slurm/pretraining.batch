@@ -1,0 +1,17 @@
+#!/bin/bash
+
+#SBATCH --nodes=1                                   # 1 node
+#SBATCH --ntasks-per-node=1                         # 1 task per node
+#SBATCH --time=72:00:00                             # time limits: 1 day
+#SBATCH --error=slurm/out/run_err.out               # standard error file
+#SBATCH --output=slurm/out/run_std.out              # standard output file
+#SBATCH --partition=amdgpulong                      # partition name
+#SBATCH --cpus-per-task=64                          # number of CPUs
+#SBATCH --gres=gpu:4                                # number of GPUs
+#SBATCH --mem=128G                                  # set memory requirement
+#SBATCH --mail-user=vlkjan6@fel.cvut.cz             # where send info about job
+#SBATCH --mail-type=ALL                             # what to send, valid type values are NONE, BEGIN, END, FAIL, REQUEUE, ALL
+
+source .env
+python distill.py --config configs/pretrain/WI_768_pretrain.yaml --log_path logs/pretraining/full --dataset robotics --path_dataset /mnt/personal/vlkjan6/setprop --multiprocessing-distributed --restart
+# python distill.py --config configs/pretrain/WI_768_pretrain.yaml --log_path logs/pretraining/full --dataset helhest --path_dataset /mnt/personal/vlkjan6/setprop/HELHEST --multiprocessing-distributed

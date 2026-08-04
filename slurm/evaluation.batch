@@ -1,0 +1,19 @@
+#!/bin/bash
+
+#SBATCH --nodes=1                                   # 1 node
+#SBATCH --ntasks-per-node=1                         # 1 task per node
+#SBATCH --time=24:00:00                             # time limits: 1 day
+#SBATCH --error=slurm/out/run_err.out               # standard error file
+#SBATCH --output=slurm/out/run_std.out              # standard output file
+#SBATCH --partition=amdgpudeadline                          # partition name
+#SBATCH --gres=gpu:1                                # number of GPUs
+#SBATCH --cpus-per-task=4                           # number of CPUs
+#SBATCH --mem=32G                                   # set memory requirement
+#SBATCH --mail-user=vlkjan6@fel.cvut.cz             # where send info about job
+#SBATCH --mail-type=ALL                             # what to send, valid type values are NONE, BEGIN, END, FAIL, REQUEUE, ALL
+
+source env_run.sh
+# python3 pan_seg_main.py --eval --verbose --clustering alpine
+
+# python pan_seg_main.py --dataset semantic_kitti --path_dataset /mnt/data/vras/data/semantic-kitti-2/ --batch_size 2 --verbose --eval --pretrained_ckpt ScaLR/logs/linear_probing/WI_768-DINOv2_ViT_L_14-NS_KI_PD/semantic_kitti/ckpt_last.pth --clustering hdbscan
+python pan_seg_main.py --dataset semantic_kitti --path_dataset /mnt/data/vras/data/semantic-kitti-2/ --batch_size 2 --verbose --eval --pretrained_ckpt ScaLR/logs/linear_probing/WI_768-DINOv2_ViT_L_14-NS_KI_PD/semantic_kitti/ckpt_last.pth --save_path /mnt/personal/vlkjan6/4d_pan_seg/semantic_kitti_dbscan_lw_sf_gt --clustering dbscan --use_gt --flow
