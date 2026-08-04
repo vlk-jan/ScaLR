@@ -198,6 +198,7 @@ def distributed_training(gpu, ngpus_per_node, args, config):
         args.world_size,
         args.amp,
         tensorboard=True,
+        loss_cfg=config.get("loss"),
     )
     if args.restart:
         mng.load_state()

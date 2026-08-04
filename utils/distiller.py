@@ -23,6 +23,11 @@ from torch.amp import GradScaler
 from torch.utils.tensorboard import SummaryWriter
 
 
+# Number of points subsampled when measuring feature diversity. The full
+# similarity matrix over a batch is N x N with N in the tens of thousands, so it
+# is estimated on a random subset instead.
+DIVERSITY_SAMPLE = 2048
+
 AMP_DTYPES = {"fp16": torch.float16, "bf16": torch.bfloat16}
 
 
@@ -41,6 +46,7 @@ class Distiller:
         world_size,
         amp="off",
         tensorboard=True,
+        loss_cfg=None,
     ):
 
         # Optim. methods
@@ -55,6 +61,14 @@ class Distiller:
         # gradients out of the subnormal range).
         self.scaler = GradScaler("cuda") if amp == "fp16" else None
         self.scheduler = scheduler
+
+        # Distillation objective
+        loss_cfg = loss_cfg or {}
+        self.loss_type = loss_cfg.get("type", "l2")
+        if self.loss_type not in ("l2", "cosine"):
+            raise ValueError(f"Unknown loss type {self.loss_type!r}, expected l2/cosine.")
+        self.collapse_weight = float(loss_cfg.get("collapse_weight", 0.0))
+        self.collapse_margin = float(loss_cfg.get("collapse_margin", 0.5))
 
         # Dataloaders
         self.max_epoch = max_epoch
@@ -82,10 +96,12 @@ class Distiller:
         else:
             self.writer_train = None
 
-    def print_log(self, running_loss):
+    def print_log(self, running_loss, div_point=None, div_image=None):
         if self.rank == 0 or self.rank is None:
             # Global score
             log = f"\nEpoch: {self.current_epoch:d} :\n" + f" Loss = {running_loss:.3f}"
+            if div_point is not None:
+                log += f" | cos_point = {div_point:.3f} | cos_image = {div_image:.3f}"
             print(log)
             sys.stdout.flush()
 
@@ -103,6 +119,57 @@ class Distiller:
             for t in list_tensors:
                 torch.distributed.gather(t)
 
+    def feature_diversity(self, z):
+        """Mean off-diagonal cosine between L2-normalised features in a batch.
+
+        This is the statistic collapse actually shows up in. It sat at 0.94 for
+        the old "x_pre_norm" targets -- one outlier channel dominating every
+        token -- against 0.35 for the post-norm ones, while the loss curve went
+        down in both cases and so looked healthy either way. Logging it makes
+        that failure mode visible instead of silent.
+        """
+        n = min(z.shape[0], DIVERSITY_SAMPLE)
+        idx = torch.randperm(z.shape[0], device=z.device)[:n]
+        zs = z[idx]
+        sim = zs @ zs.T
+        return (sim.sum() - sim.diagonal().sum()) / (n * (n - 1))
+
+    def distill_loss(self, k, q):
+        """Distillation loss between student features k and teacher features q.
+
+        Both are (N, C) and raw. The normalisation and everything downstream of
+        it are done in float32 regardless of the autocast dtype: the loss
+        compares near-parallel unit vectors, so it is a subtraction of similar
+        quantities, and bfloat16's 8-bit mantissa loses most of the signal to
+        cancellation there.
+        """
+        k = F.normalize(k.float(), p=2, dim=1)
+        q = F.normalize(q.float(), p=2, dim=1)
+
+        if self.loss_type == "cosine":
+            # Better behaved than the L2 form, whose gradient diverges as the
+            # two vectors coincide (d/dx sqrt(x) -> inf at 0).
+            loss = (1.0 - (k * q).sum(dim=1)).mean()
+        else:
+            loss = torch.norm(k - q, dim=1, p=2).mean()
+
+        total = loss
+        if self.collapse_weight > 0:
+            div_k = self.feature_diversity(k)
+            total = loss + self.collapse_weight * F.relu(
+                div_k - self.collapse_margin
+            )
+        else:
+            with torch.no_grad():
+                div_k = self.feature_diversity(k)
+        with torch.no_grad():
+            div_q = self.feature_diversity(q)
+
+        # total is what gets optimised; loss is the distillation term alone, and
+        # it is the one to compare across settings -- otherwise turning the
+        # collapse penalty on looks like the distillation got worse.
+        return total, loss.detach(), div_k.detach(), div_q
+
     def one_epoch(self):
         # Init.
         loader = self.loader_train
@@ -118,7 +185,10 @@ class Distiller:
         print_freq = np.max((len(loader) // 10, 1))
 
         # Stat.
-        running_loss = 0.0
+        device = torch.device("cuda", self.rank) if self.rank is not None else "cuda"
+        running_loss, running_total, running_div_k, running_div_q = (
+            torch.zeros((), device=device) for _ in range(4)
+        )
 
         # Loop over mini-batches
         if self.rank == 0 or self.rank is None:
@@ -143,34 +213,44 @@ class Distiller:
             # Get prediction and loss
             with torch.autocast("cuda", enabled=self.amp_enabled, dtype=self.amp_dtype):
                 feat_point = model_point(*net_inputs)
-                # Distillation loss
+                # Gather the point/pixel pairs
                 k, q = [], []
                 for b in range(feat_point.shape[0]):
                     k.append(feat_point[b, :, batch["pairing_points"][b]])
                     m = tuple(batch["pairing_images"][b].T.long())
                     q.append(feat_im[b : b + 1][m])
-                k = F.normalize(torch.cat(k, dim=1), p=2, dim=0)
-                q = F.normalize(torch.cat(q, dim=0), p=2, dim=1)
-                loss = torch.norm(k.transpose(1, 0) - q, dim=1, p=2).mean()
-            running_loss += loss.detach()
+                k = torch.cat(k, dim=1).transpose(1, 0)
+                q = torch.cat(q, dim=0)
+            # Distillation loss, in float32 (see distill_loss)
+            loss, distill, div_k, div_q = self.distill_loss(k, q)
+            running_loss += distill
+            running_total += loss.detach()
+            running_div_k += div_k
+            running_div_q += div_q
 
             # Logs
             if it % print_freq == print_freq - 1 or it == len(loader) - 1:
                 # Gather scores
+                stats = [running_loss, running_total, running_div_k, running_div_q]
                 if self.train_sampler is not None:
-                    out = self.gather_scores([running_loss])
+                    out = self.gather_scores(stats)
                 else:
-                    out = [running_loss.cpu()]
+                    out = [t.cpu() for t in stats]
                 if self.rank == 0 or self.rank is None:
                     # Compute scores
-                    running_loss_reduced = out[0].item() / self.world_size / (it + 1)
+                    loss_r, total_r, div_k_r, div_q_r = [
+                        t.item() / self.world_size / (it + 1) for t in out
+                    ]
                     # Print score
-                    self.print_log(running_loss_reduced)
+                    self.print_log(loss_r, div_k_r, div_q_r)
                     # Save in tensorboard
-                    if (writer is not None) and (it == len(loader) - 1):
+                    if writer is not None:
                         header = "Pretrain"
                         step = self.current_epoch * len(loader) + it
-                        writer.add_scalar(header + "/loss", running_loss_reduced, step)
+                        writer.add_scalar(header + "/loss", loss_r, step)
+                        writer.add_scalar(header + "/loss_total", total_r, step)
+                        writer.add_scalar(header + "/diversity_point", div_k_r, step)
+                        writer.add_scalar(header + "/diversity_image", div_q_r, step)
                         writer.add_scalar(
                             header + "/lr", self.optim.param_groups[0]["lr"], step
                         )

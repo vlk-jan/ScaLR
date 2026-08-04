@@ -27,3 +27,18 @@ optim:
   weight_decay: 0.03
   iter_warmup: 1500
   min_lr: 0.00001
+
+loss:
+  # "l2" is the original ScaLR objective: Euclidean distance between the
+  # L2-normalised student and teacher features. "cosine" optimises 1 - cos,
+  # which ranks identically but whose gradient stays bounded as the two vectors
+  # align (d/dx sqrt(x) diverges at 0). Changing this changes the loss scale,
+  # so the LR would need retuning -- do not flip it mid-campaign.
+  type: "l2"
+  # Anti-collapse penalty on the mean off-diagonal cosine of the student
+  # features, hinged at collapse_margin. 0 disables it, which is the default:
+  # the diversity statistic is logged either way (Pretrain/diversity_point and
+  # Pretrain/diversity_image in tensorboard), and logging alone would have
+  # caught the x_pre_norm target collapse.
+  collapse_weight: 0.0
+  collapse_margin: 0.5
