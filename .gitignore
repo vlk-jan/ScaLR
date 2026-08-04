@@ -14,3 +14,19 @@ __pycache__/
 logs/
 my_own_logs/
 dinov2_weights/
+dinov3_weights/
+
+# Other folders
+WaffleIron
+run_mode/
+.h200/
+
+# SLURM job output
+slurm/out/
+
+# Editor
+.vscode/
+
+# Scratch analysis figures / recordings
+*.png
+*.mp4
