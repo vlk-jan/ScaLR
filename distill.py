@@ -81,10 +81,15 @@ def get_dataloader(train_dataset, args):
 
 
 def get_optimizer(parameters, config):
+    # The fused implementation folds the whole AdamW update into one kernel
+    # instead of one per parameter tensor. Mathematically identical, just fewer
+    # launches; it needs every parameter on CUDA, which they are by the time
+    # this is called.
     return torch.optim.AdamW(
         parameters,
         lr=config["optim"]["lr"],
         weight_decay=config["optim"]["weight_decay"],
+        fused=torch.cuda.is_available(),
     )
 
 
