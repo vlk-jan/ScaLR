@@ -17,6 +17,7 @@ import torch
 import torch.nn as nn
 import torchvision.transforms as T
 import models.dinov2_vision_transformer as dinov2_vit
+import models.dinov3_vision_transformer as dinov3_vit
 
 
 DINOv2_MODELS = {
@@ -25,6 +26,12 @@ DINOv2_MODELS = {
     "dinov2_vit_large_p14": ("dinov2_vitl14", 14, 1024),
 }
 
+DINOv3_MODELS = {
+    "dinov3_vit_small_p16": ("dinov3_vits16", 16, 384),
+    "dinov3_vit_base_p16": ("dinov3_vitb16", 16, 768),
+    "dinov3_vit_large_p16": ("dinov3_vitl16", 16, 1024),
+    "dinov3_vit_huge_p16": ("dinov3_vith16", 16, 1280),
+}
 
 class Preprocessing:
     """
@@ -49,10 +56,29 @@ class ImageTeacher(nn.Module):
         # ImageNet RGB normalization
         self.preprocessing = Preprocessing()
 
-        # ViT parameters
-        model_name, patch_size, embed_dim = DINOv2_MODELS.get(
-            config["image_backbone"]["images_encoder"]
-        )
+        # ViT parameters and model
+        if "dinov2" in config["image_backbone"]["images_encoder"]:
+            model_name, patch_size, embed_dim = DINOv2_MODELS.get(
+                config["image_backbone"]["images_encoder"]
+            )
+            self.encoder = dinov2_vit.__dict__[model_name](
+                patch_size=patch_size,
+                pretrained=True,
+            )
+        elif "dinov3" in config["image_backbone"]["images_encoder"]:
+            model_name, patch_size, embed_dim = DINOv3_MODELS.get(
+                config["image_backbone"]["images_encoder"]
+            )
+            self.encoder = dinov3_vit.__dict__[model_name](
+                patch_size=patch_size,
+                pretrained=True,
+            )
+        else:
+            raise ValueError(
+                f"Unknown image teacher {config['image_backbone']['images_encoder']}"
+            )
+
+        self.model_name = model_name
         self.patch_size = patch_size
         self.embed_dim = embed_dim
         self.which_feature = config["image_backbone"]["feat"]
@@ -68,12 +94,6 @@ class ImageTeacher(nn.Module):
         assert (width % self.patch_size) == 0
         self.f_height = height // self.patch_size
         self.f_width = width // self.patch_size
-
-        # Load ViT
-        self.encoder = dinov2_vit.__dict__[model_name](
-            patch_size=patch_size,
-            pretrained=True,
-        )
 
         # Create decoder - Just upsampling in our case
         self.decoder = nn.Upsample(
@@ -107,9 +127,10 @@ class ImageTeacher(nn.Module):
             feat = output[self.which_feature]
             x = torch.cat(feat, dim=2)
 
-            # Remove the CLS token and reshape the patch token features.
+            # Remove the CLS and register tokens and reshape the patch token features.
+            idx = getattr(self.encoder, "n_storage_tokens", 0) + 1
             x = (
-                x[:, 1:, :]
+                x[:, idx:, :]
                 .transpose(1, 2)
                 .view(batch_size, self.embed_dim, self.f_height, self.f_width)
             )
