@@ -2,8 +2,8 @@ point_backbone:
   size_input: 5
   input_features: ["intensity", "xyz", "radius"]
   nb_channels: 768
-  nb_class: 1024 # nb_class should match the size of the vit features
-  depth: 48
+  nb_class: 1280 # nb_class should match the size of the vit features
+  depth: 36
   dim_proj: [2, 1, 0]
   grid_shape: [[256, 256], [256, 32], [256, 32]]
   fov: [[-64, -64, -8], [64, 64, 8]]
@@ -13,13 +13,13 @@ point_backbone:
   layernorm: True
 
 image_backbone:
-  images_encoder: "dinov2_vit_large_p14"
+  images_encoder: "dinov3_vit_huge_p16"
   feat: "x_pre_norm"
   im_size: [224, 448]
  
 dataloader:
-  batch_size: 8
-  num_workers: 128
+  batch_size: 4
+  num_workers: 32
   num_epochs: 25
 
 optim:
