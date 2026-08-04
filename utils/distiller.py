@@ -94,7 +94,6 @@ class Distiller:
                 torch.distributed.gather(t)
 
     def one_epoch(self):
-
         # Init.
         loader = self.loader_train
         writer = self.writer_train
@@ -116,7 +115,6 @@ class Distiller:
             bar_format = "{desc:<5.5}{percentage:3.0f}%|{bar:50}{r_bar}"
             loader = tqdm(loader, bar_format=bar_format)
         for it, batch in enumerate(loader):
-
             # Extract image features
             images = batch["images"].cuda(self.rank, non_blocking=True)
             with torch.autocast("cuda", enabled=self.fp16):
@@ -185,6 +183,7 @@ class Distiller:
         ckpt = torch.load(
             filename,
             map_location=f"cuda:{rank}",
+            weights_only=False,
         )
         self.model_point.load_state_dict(ckpt["model_point"])
         if ckpt.get("optim") is None:
@@ -195,7 +194,15 @@ class Distiller:
             if ckpt.get("scheduler") is None:
                 warnings.warn("Scheduler state not available")
             else:
-                self.scheduler.load_state_dict(ckpt["scheduler"])
+                # WarmupCosine is a callable object, so LambdaLR serialises its
+                # __dict__ (max_iter, warmup_end, factor_min) under "lr_lambdas" and
+                # load_state_dict writes it back onto the live lambda. Restoring that
+                # wholesale silently discards the num_epochs given on the command line
+                # and reinstates the old run's schedule. Keep our position in the
+                # schedule (last_epoch), but keep the schedule we were configured with.
+                saved = dict(ckpt["scheduler"])
+                saved["lr_lambdas"] = self.scheduler.state_dict()["lr_lambdas"]
+                self.scheduler.load_state_dict(saved)
         if self.fp16:
             if ckpt.get("scaler") is None:
                 warnings.warn("Scaler state not available")
