@@ -14,7 +14,7 @@ point_backbone:
 
 image_backbone:
   images_encoder: "dinov3_vit_huge_p16"
-  feat: "x_pre_norm"
+  feat: "x"
   im_size: [224, 448]
  
 dataloader:
