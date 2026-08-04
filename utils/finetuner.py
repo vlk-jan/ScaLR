@@ -18,7 +18,7 @@ import torch
 import warnings
 import numpy as np
 from tqdm import tqdm
-from torch.cuda.amp import GradScaler
+from torch.amp import GradScaler
 from torch.utils.tensorboard import SummaryWriter
 from utils.metrics import overall_accuracy, fast_hist, per_class_iu, per_class_accuracy
 
@@ -46,7 +46,7 @@ class Finetuner:
         # Optim. methods
         self.optim = optim
         self.fp16 = fp16
-        self.scaler = GradScaler() if fp16 else None
+        self.scaler = GradScaler("cuda") if fp16 else None
         self.scheduler = scheduler
         self.linear_probing = linear_probing
 
@@ -122,15 +122,16 @@ class Finetuner:
                 torch.distributed.gather(t)
 
     def one_epoch(self, training=True):
-
         # Train or eval mode only on classif layer
-
         if training:
             if self.linear_probing:
                 # Do not update statistics in backbone...
                 self.net.eval()
                 # ... except in final classification layer.
-                self.net.module.classif.train()
+                try:
+                    self.net.module.classif.train()
+                except AttributeError:
+                    self.net.classif.train()
             else:
                 self.net.train()
             loader = self.loader_train
@@ -255,6 +256,7 @@ class Finetuner:
         ckpt = torch.load(
             filename,
             map_location=f"cuda:{rank}",
+            weights_only=False,
         )
         self.net.load_state_dict(ckpt["net"])
         if ckpt.get("optim") is None:

@@ -143,6 +143,10 @@ def distributed_training(gpu, ngpus_per_node, args, config):
         args.workers = int(
             (config["dataloader"]["num_workers"] + ngpus_per_node - 1) / ngpus_per_node
         )
+        if args.batch_size <= 0:
+            args.batch_size = 1
+        if args.workers <= 0:
+            args.workers = 1
         model_point = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model_point)
         model_point = torch.nn.parallel.DistributedDataParallel(
             model_point, device_ids=[args.gpu]
@@ -254,7 +258,7 @@ def get_default_parser():
     parser.add_argument(
         "--dataset",
         type=str,
-        help="Path to dataset",
+        help="Name of the dataset",
         default="nuscenes",
     )
     parser.add_argument(

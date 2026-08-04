@@ -191,7 +191,7 @@ def get_dataloader(train_dataset, val_dataset, args):
     )
     val_loader = torch.utils.data.DataLoader(
         val_dataset,
-        batch_size=args.batch_size,
+        batch_size=args.batch_size // 4,
         shuffle=False,
         num_workers=args.workers,
         pin_memory=True,
@@ -250,7 +250,7 @@ def distributed_training(gpu, ngpus_per_node, args, config):
     )
     if args.pretrained_ckpt != "":
         # Load pretrained model
-        ckpt = torch.load(args.pretrained_ckpt, map_location="cpu")
+        ckpt = torch.load(args.pretrained_ckpt, map_location="cpu", weights_only=False)
         if ckpt.get("model_points") is not None:
             ckpt = ckpt["model_points"]
         else:
@@ -267,11 +267,17 @@ def distributed_training(gpu, ngpus_per_node, args, config):
         model.load_state_dict(new_ckpt)
 
     # Re-init. classification layer (always a learnable layer)
-    classif = torch.nn.Conv1d(
-        config["waffleiron"]["nb_channels"], config["classif"]["nb_class"], 1
+    # classif = torch.nn.Conv1d(
+    #     config["waffleiron"]["nb_channels"], config["classif"]["nb_class"], 1
+    # )
+    # torch.nn.init.constant_(classif.bias, 0)
+    # torch.nn.init.constant_(classif.weight, 0)
+    classif = torch.nn.Sequential(
+        torch.nn.Conv1d(config["waffleiron"]["nb_channels"], config["waffleiron"]["nb_channels"] // 2, 1),
+        torch.nn.BatchNorm1d(config["waffleiron"]["nb_channels"] // 2),
+        torch.nn.Mish(inplace=True),
+        torch.nn.Conv1d(config["waffleiron"]["nb_channels"] // 2, config["classif"]["nb_class"], 1),
     )
-    torch.nn.init.constant_(classif.bias, 0)
-    torch.nn.init.constant_(classif.weight, 0)
     model.classif = torch.nn.Sequential(
         torch.nn.BatchNorm1d(config["waffleiron"]["nb_channels"]),
         classif,
@@ -302,6 +308,10 @@ def distributed_training(gpu, ngpus_per_node, args, config):
         args.workers = int(
             (config["dataloader"]["num_workers"] + ngpus_per_node - 1) / ngpus_per_node
         )
+        if args.batch_size <= 0:
+            args.batch_size = 1
+        if args.workers <= 0:
+            args.workers = 1
         model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model)
         model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu])
     elif args.gpu is not None:
@@ -312,7 +322,7 @@ def distributed_training(gpu, ngpus_per_node, args, config):
         # DataParallel will divide and allocate batch_size to all available GPUs
         model = torch.nn.DataParallel(model).cuda()
     if args.gpu == 0 or args.gpu is None:
-        print(f"Model:\n{model}")
+        # print(f"Model:\n{model}")
         nb_param = sum([p.numel() for p in model.parameters() if p.requires_grad]) / 1e6
         print(f"{nb_param} x 10^6 parameters")
 
@@ -433,7 +443,7 @@ def get_default_parser():
     parser.add_argument(
         "--dataset",
         type=str,
-        help="Path to dataset",
+        help="Name of the dataset",
         default="nuscenes",
     )
     parser.add_argument(
