@@ -41,7 +41,7 @@ class PCDataset(Dataset):
 
         # Dataset split
         self.phase = phase
-        assert self.phase in ["train", "val", "trainval", "test"]
+        assert self.phase in ["train", "val", "trainval", "test", "pred"]
 
         # Root directory of dataset
         self.rootdir = rootdir
@@ -156,7 +156,7 @@ class PCDataset(Dataset):
         # Get neighbors for point embedding layer providing tokens to waffleiron backbone
         kdtree = KDTree(pc[:, :3])
         assert pc.shape[0] > self.num_neighbors
-        dist, neighbors_emb = kdtree.query(pc[:, :3], k=self.num_neighbors + 1)
+        _, neighbors_emb = kdtree.query(pc[:, :3], k=self.num_neighbors + 1)
 
         # Nearest neighbor interpolation to undo cropping & voxelisation at validation time
         if self.phase in ["train", "trainval"]:

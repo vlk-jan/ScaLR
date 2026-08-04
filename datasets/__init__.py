@@ -14,40 +14,51 @@
 
 from .pc_dataset import Collate
 from .im_pc_dataset import CollateDistillation
-from .merged_datasets import MergedDatasetsDistill
-from .nuscenes_for_scalr import (
-    NuScenesSemSeg,
-    NuScenesSemSeg_1p,
-    NuScenesSemSeg_10p,
-    NuScenesDistill,
-)
-from .semantic_kitti_for_scalr import (
-    SemanticKITTISemSeg,
-    SemanticKITTISemSeg_1p,
-    SemanticKITTIDistill,
-)
-from .pandaset_for_scalr import (
-    Pandaset64SemSeg,
-    PandasetGTSemSeg,
-    PandaSet64Distill,
-    PandaSetGTDistill,
-)
+# from .merged_datasets import MergedDatasetsDistill
+from .robotics_merged import RoboticsMergedDistill
+# from .nuscenes_for_scalr import (
+#     NuScenesSemSeg,
+#     NuScenesSemSeg_1p,
+#     NuScenesSemSeg_10p,
+#     NuScenesDistill,
+# )
+# from .semantic_kitti_for_scalr import (
+#     SemanticKITTISemSeg,
+#     SemanticKITTISemSeg_1p,
+#     SemanticKITTIDistill,
+# )
+# from .pandaset_for_scalr import (
+#     Pandaset64SemSeg,
+#     PandasetGTSemSeg,
+#     PandaSet64Distill,
+#     PandaSetGTDistill,
+# )
+from .rellis_for_scalr import RellisDistill, RellisSemSeg
+from .rough_for_scalr import RoughDistill, RoughSemSeg
+from .helhest_for_scalr import HelhestDistill, HelhestSemSeg
 
 
 LIST_DATASETS = {
-    "nuscenes": NuScenesSemSeg,
-    "nuscenes_1p": NuScenesSemSeg_1p,
-    "nuscenes_10p": NuScenesSemSeg_10p,
-    "semantic_kitti": SemanticKITTISemSeg,
-    "semantic_kitti_1p": SemanticKITTISemSeg_1p,
-    "panda64": Pandaset64SemSeg,
-    "pandagt": PandasetGTSemSeg,
+    # "nuscenes": NuScenesSemSeg,
+    # "nuscenes_1p": NuScenesSemSeg_1p,
+    # "nuscenes_10p": NuScenesSemSeg_10p,
+    # "semantic_kitti": SemanticKITTISemSeg,
+    # "semantic_kitti_1p": SemanticKITTISemSeg_1p,
+    # "panda64": Pandaset64SemSeg,
+    # "pandagt": PandasetGTSemSeg,
+    "rellis": RellisSemSeg,
+    "rough": RoughSemSeg,
+    "helhest": HelhestSemSeg,
 }
 
 LIST_DATASETS_DISTILL = {
-    "nuscenes": NuScenesDistill,
-    "semantic_kitti": SemanticKITTIDistill,
-    "panda64": PandaSet64Distill,
-    "pandagt": PandaSetGTDistill,
-    "merged_datasets": MergedDatasetsDistill,
+    # "nuscenes": NuScenesDistill,
+    # "semantic_kitti": SemanticKITTIDistill,
+    # "panda64": PandaSet64Distill,
+    # "pandagt": PandaSetGTDistill,
+    # "merged_datasets": MergedDatasetsDistill,
+    "rellis": RellisDistill,
+    "rough": RoughDistill,
+    "helhest": HelhestDistill,
+    "robotics": RoboticsMergedDistill,
 }

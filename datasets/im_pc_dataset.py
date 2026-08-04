@@ -122,40 +122,45 @@ class ImPcDataset(PCDataset):
         return im, pairing_images
 
     def __getitem__(self, index):
-        # Load original point cloud
-        pc = self.load_pc(index)
+        for _ in range(8):
+            try:
+                # Load original point cloud
+                pc = self.load_pc(index)
 
-        # Voxelization
-        pc, _ = self.downsample(pc, None)
+                # Voxelization
+                pc, _ = self.downsample(pc, None)
 
-        # Project point cloud to image
-        pc, images, pairing_images = self.map_pc_to_image(pc, index)
-        images = torch.tensor(np.array(images, dtype=np.float32).transpose(0, 3, 1, 2))
-        assert len(pairing_images) > 0
+                # Project point cloud to image
+                pc, images, pairing_images = self.map_pc_to_image(pc, index)
+                images = torch.tensor(np.array(images, dtype=np.float32).transpose(0, 3, 1, 2))
+                assert len(pairing_images) > 0, f"No points project into the image. For {self.list_keyframes[index][0]}"
+        
+                # Limit number of points and ...
+                pc, _, idx = self.limit_num_points(pc, None, return_idx=True)
+                # ... adapt (points, pixels) pairs
+                pairing_images = pairing_images[idx]
 
-        # Limit number of points and ...
-        pc, _, idx = self.limit_num_points(pc, None, return_idx=True)
-        # ... adapt (points, pixels) pairs
-        pairing_images = pairing_images[idx]
+                # Apply augmentations
+                pc, _ = self.pc_augmentations(pc, None)
+                images, pairing_images = self.resize_im(images, pairing_images)
 
-        # Apply augmentations
-        pc, _ = self.pc_augmentations(pc, None)
-        images, pairing_images = self.resize_im(images, pairing_images)
+                # Crop to fov and ...
+                pc, _, idx = self.crop_to_fov(pc, None, return_mask=True)
+                # ... adapt (points, pixels) pairs
+                pairing_images = pairing_images[idx]
 
-        # Crop to fov and ...
-        pc, _, where = self.crop_to_fov(pc, None, return_mask=True)
-        # ... adapt (points, pixels) pairs
-        pairing_images = pairing_images[where]
+                # Get point features
+                pc = self.prepare_input_features(pc)
 
-        # Get point features
-        pc = self.prepare_input_features(pc)
+                # Projection on 2D grid
+                cell_ind = self.get_occupied_2d_cells(pc)
 
-        # Projection on 2D grid
-        cell_ind = self.get_occupied_2d_cells(pc)
-
-        # Embedding
-        kdtree = KDTree(pc[:, :3])
-        assert pc.shape[0] > self.num_neighbors
+                # Embedding
+                kdtree = KDTree(pc[:, :3])
+                assert pc.shape[0] > self.num_neighbors, f"Only {pc.shape[0]} points available. For {self.list_keyframes[index][0]}"
+                break
+            except Exception as e:
+                index = np.random.randint(len(self))
         _, neighbors = kdtree.query(pc[:, :3], k=self.num_neighbors + 1)
 
         out = (
