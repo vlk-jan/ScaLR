@@ -196,7 +196,7 @@ def distributed_training(gpu, ngpus_per_node, args, config):
         args.log_path,
         args.gpu,
         args.world_size,
-        args.fp16,
+        args.amp,
         tensorboard=True,
     )
     if args.restart:
@@ -219,6 +219,18 @@ def main(args, config):
     args.dist_backend = "nccl"
     # Distributed processing
     args.distributed = args.multiprocessing_distributed
+
+    # Mixed precision mode
+    if args.fp16 and args.bf16:
+        raise ValueError("Pass at most one of --fp16 / --bf16.")
+    if args.bf16:
+        if not torch.cuda.is_bf16_supported():
+            raise RuntimeError("--bf16 requested but this GPU does not support it.")
+        args.amp = "bf16"
+    elif args.fp16:
+        args.amp = "fp16"
+    else:
+        args.amp = "off"
 
     # Create log directory
     os.makedirs(args.log_path, exist_ok=True)
@@ -298,7 +310,15 @@ def get_default_parser():
         "--fp16",
         action="store_true",
         default=False,
-        help="Enable autocast for mix precision training",
+        help="Enable float16 autocast (with a gradient scaler)",
+    )
+    parser.add_argument(
+        "--bf16",
+        action="store_true",
+        default=False,
+        help="Enable bfloat16 autocast. Same speed as fp16 on Ampere and later "
+        "but with float32's exponent range, so no gradient scaler is needed "
+        "and there are no skipped steps or overflow stalls. Prefer this.",
     )
 
     return parser

@@ -19,8 +19,11 @@ import warnings
 import numpy as np
 from tqdm import tqdm
 import torch.nn.functional as F
-from torch.cuda.amp import GradScaler
+from torch.amp import GradScaler
 from torch.utils.tensorboard import SummaryWriter
+
+
+AMP_DTYPES = {"fp16": torch.float16, "bf16": torch.bfloat16}
 
 
 class Distiller:
@@ -36,14 +39,21 @@ class Distiller:
         path,
         rank,
         world_size,
-        fp16=True,
+        amp="off",
         tensorboard=True,
     ):
 
         # Optim. methods
         self.optim = optim
-        self.fp16 = fp16
-        self.scaler = GradScaler() if fp16 else None
+        if amp not in ("off", "fp16", "bf16"):
+            raise ValueError(f"Unknown amp mode {amp!r}, expected off/fp16/bf16.")
+        self.amp = amp
+        self.amp_enabled = amp != "off"
+        self.amp_dtype = AMP_DTYPES.get(amp)
+        # bfloat16 has the same exponent range as float32, so the loss scaler is
+        # both unnecessary and harmful there (it only exists to keep float16
+        # gradients out of the subnormal range).
+        self.scaler = GradScaler("cuda") if amp == "fp16" else None
         self.scheduler = scheduler
 
         # Dataloaders
@@ -117,7 +127,7 @@ class Distiller:
         for it, batch in enumerate(loader):
             # Extract image features
             images = batch["images"].cuda(self.rank, non_blocking=True)
-            with torch.autocast("cuda", enabled=self.fp16):
+            with torch.autocast("cuda", enabled=self.amp_enabled, dtype=self.amp_dtype):
                 feat_im = model_image(images)
                 feat_im = feat_im.permute(0, 2, 3, 1)
 
@@ -131,7 +141,7 @@ class Distiller:
             net_inputs = (feat, cell_ind, occupied_cell, neighbors_emb)
 
             # Get prediction and loss
-            with torch.autocast("cuda", enabled=self.fp16):
+            with torch.autocast("cuda", enabled=self.amp_enabled, dtype=self.amp_dtype):
                 feat_point = model_point(*net_inputs)
                 # Distillation loss
                 k, q = [], []
@@ -167,7 +177,7 @@ class Distiller:
 
             # Gradient step
             self.optim.zero_grad(set_to_none=True)
-            if self.fp16:
+            if self.scaler is not None:
                 self.scaler.scale(loss).backward()
                 self.scaler.step(self.optim)
                 self.scaler.update()
@@ -203,7 +213,7 @@ class Distiller:
                 saved = dict(ckpt["scheduler"])
                 saved["lr_lambdas"] = self.scheduler.state_dict()["lr_lambdas"]
                 self.scheduler.load_state_dict(saved)
-        if self.fp16:
+        if self.scaler is not None:
             if ckpt.get("scaler") is None:
                 warnings.warn("Scaler state not available")
             else:
@@ -223,7 +233,9 @@ class Distiller:
                 "scheduler": self.scheduler.state_dict()
                 if self.scheduler is not None
                 else None,
-                "scaler": self.scaler.state_dict() if self.fp16 else None,
+                "scaler": self.scaler.state_dict()
+                if self.scaler is not None
+                else None,
             }
             filename = self.path_to_ckpt + "/ckpt_last.pth"
             torch.save(dict_to_save, filename)

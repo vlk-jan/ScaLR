@@ -21,6 +21,16 @@
 # No --restart: this is a fresh run, and the teacher's output distribution changed
 # completely, so warm-starting from full_3.pth would start from weights fitted to a
 # degenerate target.
+#
+# --bf16 rather than --fp16, and this is not just hygiene. Measured on 64 real
+# samples at seed 0, so identical init and data order, the only difference being
+# the autocast dtype:
+#   fp32  loss 1.063 -> 0.745, cos_point 0.897 -> 0.796
+#   bf16  loss 1.063 -> 0.746, cos_point 0.897 -> 0.798   (fp32 to ~1e-3)
+#   fp16  tracks fp32 for ~50 steps, then NaN, and exits 0
+# The student's activations leave the float16 range; the gradient scaler does
+# not catch it because it only inspects gradients, and by then the loss is
+# already NaN. bf16 has float32's exponent range and simply does not do this.
 
 source .h200_env
-python distill.py --config configs/pretrain/WI_768_h200.yaml --log_path logs/pretraining/full_v4 --dataset robotics --path_dataset /mnt/personal/vlkjan6/setprop --multiprocessing-distributed --fp16
+python distill.py --config configs/pretrain/WI_768_h200.yaml --log_path logs/pretraining/full_v4 --dataset robotics --path_dataset /mnt/personal/vlkjan6/setprop --multiprocessing-distributed --bf16
