@@ -106,6 +106,34 @@ class Scale(Transformation):
         return pcloud, labels
 
 
+class Translation(Transformation):
+    """Random per-sample offset of the selected coordinate dims.
+
+    Purpose (drift-waffleiron-position-correlation): the stock augmentation
+    pipeline randomises bearing (Rotation dim=2) but never translation, so
+    the ego stays exactly at the BEV grid center and both the absolute cell
+    a point lands in and its `radius` input feature are deterministic
+    functions of the scene — the two channels through which ego-position
+    stays linearly decodable from the features regardless of input-feature
+    choice. A uniform xy offset breaks the ego-centering (grid cells and
+    border-padding geometry shift per sample) and jitters radius as a side
+    effect. Runs after point-pixel pairing and after proprio-label lookup
+    (both are by point index / pre-augmentation coordinates), so it breaks
+    neither.
+    """
+
+    def __init__(self, dims=(0, 1), range=10.0, inplace=False):
+        super().__init__(inplace)
+        self.dims = dims
+        self.range = range
+
+    def __call__(self, pcloud, labels):
+        pcloud, labels = super().__call__(pcloud, labels)
+        offset = (2 * torch.rand(len(self.dims)) - 1).numpy() * self.range
+        pcloud[:, self.dims] += offset
+        return pcloud, labels
+
+
 class FlipXY(Transformation):
     def __init__(self, inplace=False):
         super().__init__(inplace=inplace)

@@ -1,0 +1,126 @@
+# Full from-scratch retrain: full_v4's recipe (WI_768_h200.yaml) + the two
+# compression-currency additions validated/motivated by the 2026-08-18/19
+# sequence (drift-compression-currency-sequence memory):
+#
+#   1. proprio_supervision — the cooperative wheel-contact compression
+#      auxiliary. The 3-epoch fine-tune pilot (job 11366943) raised frozen-
+#      feature held-out compression-R² from 0.535 (full_v4) to 0.618 with the
+#      [both numbers measured pre-2026-08-20; see the acceptance-test block
+#      below for why they are not comparable to anything measured since, and
+#      note the ORDERING also reversed on the fixed stack: full_v4 0.403 now
+#      beats proprio_pilot_ep3 0.352. The pilot's motivating result did not
+#      survive re-measurement — which makes v5's own depth curve, not this
+#      delta, the thing to judge the aux on]
+#      aux Huber still falling ~33%/epoch at cutoff and zero damage to the
+#      distillation loss — folding it into a full retrain gives it the budget
+#      the pilot lacked, and lets the backbone organise around the signal
+#      from the start instead of retrofitting it.
+#   2. augmentations.translation_range — random per-sample xy offset. The
+#      stock pipeline randomises bearing but never translation, so the ego
+#      sits exactly at the BEV grid center every sample and absolute cell
+#      index / radius stay deterministic functions of the scene — the
+#      architectural position channel none of the three input/target-side
+#      pilots could touch. ±10 m is a judgment call: large vs the ±6.4 m
+#      property grid, small vs the ±64 m fov (≲8% of content shifts out of
+#      crop).
+#
+# Judgment call on proprio_supervision.weight at from-scratch scale: distill
+# loss starts ~1.0-1.1 and the aux at weight 10 starts ~0.9 — co-equal
+# initially, decaying as the huber falls (the pilot ran at ~5% because its
+# warm-started distill loss was already low). Watch Pretrain/loss and
+# cos_point against full_v4's curves (epoch-avg 0.659 → 0.416 over 25); if
+# distillation visibly degrades, the fallback is weight 5.0 or the extended
+# fine-tune arm instead.
+#
+# Acceptance test for the result: DRIFT's scripts/analysis/probe_compression.py.
+#
+# !! THE REFERENCE POINTS BELOW WERE RESTATED 2026-08-20. The originals quoted
+# in this file (full_v4 0.535, proprio_pilot_ep3 0.618, hm-stats 0.962,
+# "cross-run noise ±0.05") were measured on a stack that has since been fixed
+# in two independent ways, and judged against them a GOOD v5 reads as a
+# catastrophic regression. Do not use them.
+#
+#   (a) The compression TARGET moved. The GT trajectory was never gravity-
+#       aligned, so the label carried a tan(tilt)*distance error growing from
+#       the window origin — and cell height in a tilted frame encodes exactly
+#       that, so the "trivial geometry" baseline was partly regressing the
+#       frame error against itself. DRIFT 4b3d95c/c4a9729 fixed it; the
+#       hm-stats baseline fell 0.962 -> 0.416.
+#   (b) The probe could not reproduce itself. --mode train left
+#       Voxelize(random=True) on, so every invocation fed a different
+#       per-voxel point subsample: the same checkpoint scored 0.434 and 0.317
+#       on identical windows. DRIFT 2246428 made it deterministic; two
+#       identical jobs now agree to three decimals.
+#
+# CURRENT reference points (deterministic, fixed stack; DRIFT jobs
+# 11378348 == 11378349, tabulated in ~/drift_readout/probe_gate_reference/
+# CANONICAL.md), all four checkpoints in ONE invocation:
+#
+#       heightmap-stats baseline   0.416   (this is the bar)
+#       current                    0.452
+#       full_v4                    0.403
+#       proprio_pilot_ep3          0.352
+#
+# Cross-run noise is now 0.000, not ±0.05 — the gate resolves smaller
+# differences than this config originally assumed. The real margin is
+# SUBSAMPLE sensitivity: absolute numbers move 0.03-0.08 between voxelization
+# draws, so a v5 margin under ~0.08 should be confirmed by averaging several
+# draws (--voxel_jitter over N seeds) before it is believed.
+#
+# ALSO RUN THE DEPTH PROBE, not just the full-depth score
+# (DRIFT slurm/probe_depth_proprio.batch). Both existing checkpoints degrade
+# sharply with depth — full_v4 0.681@K=6 -> 0.529@K=36, proprio_pilot
+# 0.688@K=18 -> 0.452@K=36 — which reads as distillation specialising the deep
+# layers for DINOv3 semantics and shedding low-level geometry on the way. The
+# proprio aux at weight 10.0 exists to counteract precisely that, so "is v5's
+# depth curve FLAT?" is a sharper test of whether the aux worked than any
+# single number, and it also decides how far the backbone can be truncated for
+# deployment.
+#
+# Secondary: rellis linprob vs full_3's 31.4% (unaffected by the above — it
+# does not use the compression target).
+
+point_backbone:
+  size_input: 5
+  input_features: ["intensity", "xyz", "radius"]
+  nb_channels: 768
+  nb_class: 1280 # nb_class should match the size of the vit features
+  depth: 36
+  dim_proj: [2, 1, 0]
+  grid_shape: [[256, 256], [256, 32], [256, 32]]
+  fov: [[-64, -64, -8], [64, 64, 8]]
+  num_neighbors: 16
+  voxel_size: 0.1
+  max_points: 20000
+  layernorm: True
+
+image_backbone:
+  images_encoder: "dinov3_vit_huge_p16"
+  feat: "x"
+  im_size: [224, 448]
+
+dataloader:
+  batch_size: 16
+  num_workers: 56
+  num_epochs: 25
+
+optim:
+  lr: 0.008
+  weight_decay: 0.03
+  iter_warmup: 1500
+  min_lr: 0.00001
+
+loss:
+  type: "l2"
+  collapse_weight: 0.0
+  collapse_margin: 0.5
+
+augmentations:
+  translation_range: 10.0
+
+proprio_supervision:
+  enabled: True
+  weight: 10.0
+  hidden_dim: 128
+  lr: 0.001
+  huber_delta: 0.05

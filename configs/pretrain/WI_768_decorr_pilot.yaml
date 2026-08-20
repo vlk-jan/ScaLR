@@ -1,0 +1,62 @@
+point_backbone:
+  size_input: 5
+  input_features: ["intensity", "xyz", "radius"]
+  nb_channels: 768
+  nb_class: 1280 # nb_class should match the size of the vit features
+  depth: 36
+  dim_proj: [2, 1, 0]
+  grid_shape: [[256, 256], [256, 32], [256, 32]]
+  fov: [[-64, -64, -8], [64, 64, 8]]
+  num_neighbors: 16
+  voxel_size: 0.1
+  max_points: 20000
+  layernorm: True
+
+image_backbone:
+  images_encoder: "dinov3_vit_huge_p16"
+  feat: "x"
+  im_size: [224, 448]
+
+dataloader:
+  batch_size: 16
+  num_workers: 56
+  # Short pilot, not a full retrain: warm-started from full_v4's already-trained
+  # weights (--warm_start_ckpt). Same 3-epoch budget as the position-invariance
+  # pilot (posinv_pilot, job 11326886) for direct comparability -- unlike that
+  # pilot, decorrelation has no learnable state to warm up (it's a deterministic
+  # per-batch closed-form fit, see Distiller.decorrelate_target), so 3 epochs is
+  # actually a more meaningful test here than it was there.
+  num_epochs: 3
+
+optim:
+  # Same as posinv_pilot: an order of magnitude below full_v4's 0.008, since
+  # this is fine-tuning an already-good backbone, not training one from scratch.
+  lr: 0.0008
+  weight_decay: 0.03
+  iter_warmup: 150
+  min_lr: 0.000001
+
+loss:
+  type: "l2"
+  collapse_weight: 0.0
+  collapse_margin: 0.5
+
+# Teacher-side target decorrelation (see utils/distiller.py::Distiller.
+# decorrelate_target and the drift-waffleiron-position-correlation memory).
+# Per sample, fits a closed-form linear regression of the raw teacher target
+# on that sample's own (x, y, radius) and subtracts the prediction before the
+# distillation loss -- i.e. the student is trained to match only the part of
+# the teacher's target that ISN'T explained by ego-position/range, rather than
+# being pushed away from encoding position after the fact (contrast with the
+# position_invariance GRL head, whose 3-epoch/weight=0.05 pilot was a null
+# result: see drift-waffleiron-position-correlation memory, 2026-08-11).
+# Watch Pretrain/decorr_r2 in tensorboard: it's the exact (not approximate)
+# fraction of each batch's target variance explained by position in that
+# batch's own augmented/rotated frame -- not directly comparable to the raw-
+# frame R^2 from the offline post-hoc probe, which is still the authoritative
+# check on whether this reduced position-encodability in the resulting
+# checkpoint's frozen features. Also watch Pretrain/loss: it should not spike,
+# or the target is being stripped of legitimate (non-leaked) content too.
+target_decorrelation:
+  enabled: True
+  min_points: 20

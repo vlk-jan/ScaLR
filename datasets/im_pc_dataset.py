@@ -36,6 +36,8 @@ class CollateDistillation:
             pairing_images,
             cell_ind,
             neighbors_emb,
+            proprio_labels,
+            proprio_masks,
         ) = list_of_data
 
         # Zero-pad point clouds
@@ -62,6 +64,11 @@ class CollateDistillation:
         occupied_cells = torch.from_numpy(np.vstack(occupied_cells)).float()  # B x Nmax
         pairing_points = [torch.tensor(p) for p in pairing_points]
         pairing_images = [torch.tensor(p) for p in pairing_images]
+        # Per-sample, unpadded (index i refers to point i of that sample;
+        # zero-padding appends, so indices stay valid against the padded feat)
+        # -- same convention as pairing_points.
+        proprio_labels = [torch.tensor(p, dtype=torch.float32) for p in proprio_labels]
+        proprio_masks = [torch.tensor(p, dtype=torch.bool) for p in proprio_masks]
 
         # Prepare output variables
         out = {
@@ -72,6 +79,8 @@ class CollateDistillation:
             "occupied_cells": occupied_cells,
             "pairing_points": pairing_points,
             "pairing_images": pairing_images,
+            "proprio_labels": proprio_labels,
+            "proprio_masks": proprio_masks,
         }
 
         return out
@@ -82,7 +91,7 @@ class ImPcDataset(PCDataset):
     Dataset matching a 3D points cloud and an image using projection.
     """
 
-    def __init__(self, max_points, im_size, **kwargs):
+    def __init__(self, max_points, im_size, translation_range=0.0, **kwargs):
         super().__init__(**kwargs)
 
         assert self.phase == "train"
@@ -95,19 +104,38 @@ class ImPcDataset(PCDataset):
             random=True,
         )
 
-        self.pc_augmentations = tr.Compose(
-            [
-                tr.Rotation(inplace=True, dim=2),
-                tr.RandomApply(tr.FlipXY(inplace=True), prob=2 / 3),
-                tr.Scale(inplace=True, dims=(0, 1, 2), range=0.1),
-            ]
-        )
+        augmentations = [
+            tr.Rotation(inplace=True, dim=2),
+            tr.RandomApply(tr.FlipXY(inplace=True), prob=2 / 3),
+            tr.Scale(inplace=True, dims=(0, 1, 2), range=0.1),
+        ]
+        if translation_range > 0.0:
+            # Breaks the ego-at-grid-center determinism the stock pipeline
+            # never touches — see tr.Translation's docstring. Off by default;
+            # enabled per-config (config["augmentations"]["translation_range"]).
+            augmentations.append(
+                tr.Translation(inplace=True, dims=(0, 1), range=translation_range)
+            )
+        self.pc_augmentations = tr.Compose(augmentations)
 
     def load_pc(self, index):
         raise NotImplementedError()
 
     def map_pc_to_image(self, pc, index, min_dist=1.0):
         raise NotImplementedError()
+
+    def load_proprio_labels(self, index, pc):
+        """Per-point proprioceptive compression labels for this sample, or
+        None when the dataset has none (the default).
+
+        Datasets with wheel-contact labels (see DRIFT's
+        scripts/generate_proprio_labels.py and HelhestDistill's override)
+        return (label (N,) float32 meters, mask (N,) bool) aligned with the
+        rows of `pc` AS PASSED IN -- __getitem__ calls this on the raw
+        (pre-augmentation) coordinates and threads the arrays through the
+        same index masks as the points, so implementations must not reorder.
+        """
+        return None
 
     def __len__(self):
         raise NotImplementedError()
@@ -134,11 +162,25 @@ class ImPcDataset(PCDataset):
                 pc, images, pairing_images = self.map_pc_to_image(pc, index)
                 images = torch.tensor(np.array(images, dtype=np.float32).transpose(0, 3, 1, 2))
                 assert len(pairing_images) > 0, f"No points project into the image. For {self.list_keyframes[index][0]}"
-        
+
+                # Proprioceptive labels are looked up on the RAW ego-frame
+                # coordinates (the label grids live in that frame), so this
+                # must happen before pc_augmentations rotates/scales the
+                # cloud; from here on the arrays ride the same index masks
+                # as the points.
+                proprio = self.load_proprio_labels(index, pc)
+                if proprio is None:
+                    proprio_label = np.zeros(pc.shape[0], dtype=np.float32)
+                    proprio_mask = np.zeros(pc.shape[0], dtype=bool)
+                else:
+                    proprio_label, proprio_mask = proprio
+
                 # Limit number of points and ...
                 pc, _, idx = self.limit_num_points(pc, None, return_idx=True)
                 # ... adapt (points, pixels) pairs
                 pairing_images = pairing_images[idx]
+                proprio_label = proprio_label[idx]
+                proprio_mask = proprio_mask[idx]
 
                 # Apply augmentations
                 pc, _ = self.pc_augmentations(pc, None)
@@ -148,6 +190,8 @@ class ImPcDataset(PCDataset):
                 pc, _, idx = self.crop_to_fov(pc, None, return_mask=True)
                 # ... adapt (points, pixels) pairs
                 pairing_images = pairing_images[idx]
+                proprio_label = proprio_label[idx]
+                proprio_mask = proprio_mask[idx]
 
                 # Get point features
                 pc = self.prepare_input_features(pc)
@@ -170,6 +214,8 @@ class ImPcDataset(PCDataset):
             pairing_images,
             cell_ind[None],
             neighbors.T[None],
+            proprio_label,
+            proprio_mask,
         )
 
         return out

@@ -1,0 +1,16 @@
+#!/bin/bash
+
+#SBATCH --nodes=1                                   # 1 node
+#SBATCH --ntasks-per-node=1                         # 1 task per node
+#SBATCH --time=24:00:00                             # time limits: 1 day
+#SBATCH --error=slurm/out/run_v4_err.out            # standard error file
+#SBATCH --output=slurm/out/run_v4_std.out           # standard output file
+#SBATCH --partition=amdgpu                          # partition name
+#SBATCH --cpus-per-task=64                          # number of CPUs
+#SBATCH --gres=gpu:3                                # number of GPUs
+#SBATCH --mem=128G                                  # set memory requirement
+#SBATCH --mail-user=vlkjan6@fel.cvut.cz             # where send info about job
+#SBATCH --mail-type=ALL                             # what to send, valid type values are NONE, BEGIN, END, FAIL, REQUEUE, ALL
+
+source .env
+python finetune.py --dataset rellis --path_dataset /mnt/personal/vlkjan6/setprop/RELLIS-3D/ --config_pretrain configs/pretrain/WI_768_pretrain.yaml --config_downstream configs/downstream/rellis/WI_768_linprob.yaml --log_path logs/linprob/rellis_v4 --pretrained_ckpt logs/pretraining/full_v4/ckpt_last.pth --multiprocessing-distributed --linprob --fp16

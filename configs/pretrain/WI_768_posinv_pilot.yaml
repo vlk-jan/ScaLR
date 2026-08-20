@@ -1,0 +1,58 @@
+point_backbone:
+  size_input: 5
+  input_features: ["intensity", "xyz", "radius"]
+  nb_channels: 768
+  nb_class: 1280 # nb_class should match the size of the vit features
+  depth: 36
+  dim_proj: [2, 1, 0]
+  grid_shape: [[256, 256], [256, 32], [256, 32]]
+  fov: [[-64, -64, -8], [64, 64, 8]]
+  num_neighbors: 16
+  voxel_size: 0.1
+  max_points: 20000
+  layernorm: True
+
+image_backbone:
+  images_encoder: "dinov3_vit_huge_p16"
+  feat: "x"
+  im_size: [224, 448]
+
+dataloader:
+  batch_size: 16
+  num_workers: 56
+  # Short pilot, not a full retrain: warm-started from full_v4's already-trained
+  # weights (--warm_start_ckpt), so this only has to move the needle on
+  # Pretrain/position_r2 enough to decide whether the full idea is worth a
+  # multi-day run, not re-learn the distillation objective from scratch.
+  num_epochs: 3
+
+optim:
+  # An order of magnitude below full_v4's 0.008: this is fine-tuning an
+  # already-good backbone, not training one from scratch -- a from-scratch LR
+  # here would undo more of full_v4's 25 epochs than 3 epochs of position
+  # pressure could plausibly be worth.
+  lr: 0.0008
+  weight_decay: 0.03
+  iter_warmup: 150
+  min_lr: 0.000001
+
+loss:
+  type: "l2"
+  collapse_weight: 0.0
+  collapse_margin: 0.5
+
+# Adversarial position-invariance head (see utils/distiller.py::PositionInvarianceHead
+# and the drift-waffleiron-position-correlation memory this is testing the fix for).
+# Predicts (x, y, radius) from student features through a gradient-reversal layer,
+# so training pushes the backbone away from encoding recoverable ego-position/range.
+# Watch Pretrain/position_r2 in tensorboard: it should fall from its full_v4-era
+# level (measured 0.6-0.98 on real HELHEST/ROUGH scenes, see the memory) if this is
+# doing anything. Watch Pretrain/loss (distillation term) at the same time -- it
+# should not spike, or grl_lambda/weight are too aggressive for a fine-tune this
+# short and are unlearning more than they're fixing.
+position_invariance:
+  enabled: True
+  weight: 0.05
+  hidden_dim: 128
+  grl_lambda: 1.0
+  lr: 0.001

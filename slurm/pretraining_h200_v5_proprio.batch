@@ -1,0 +1,21 @@
+#!/bin/bash
+
+#SBATCH --nodes=1
+#SBATCH --ntasks-per-node=1
+#SBATCH --time=60:00:00                             # 25 epochs @ ~1.8-2h (aux adds a little) =~ 48h, padded; h200long limit is 3 days
+#SBATCH --error=slurm/out/v5_proprio_err.out
+#SBATCH --output=slurm/out/v5_proprio_std.out
+#SBATCH --partition=h200long                        # >24h -> h200long (h200 MaxTime is 24h)
+#SBATCH --cpus-per-task=62                          # node has 124 effective
+#SBATCH --gres=gpu:4
+#SBATCH --mem=512G
+#SBATCH --mail-user=vlkjan6@fel.cvut.cz
+#SBATCH --mail-type=ALL
+
+# Full from-scratch retrain with the proprio-compression auxiliary +
+# translation augmentation — see WI_768_h200_v5_proprio.yaml's header for
+# rationale, what to watch, and the acceptance test. No --warm_start_ckpt:
+# from scratch by design (the aux should shape the features from epoch 0).
+
+source .h200_env
+python distill.py --config configs/pretrain/WI_768_h200_v5_proprio.yaml --log_path logs/pretraining/full_v5_proprio --dataset robotics --path_dataset /mnt/personal/vlkjan6/setprop --multiprocessing-distributed --bf16

@@ -1,0 +1,49 @@
+point_backbone:
+  size_input: 3
+  input_features: ["intensity", "height", "radius"]
+  nb_channels: 768
+  nb_class: 1280
+  depth: 36
+  dim_proj: [2, 1, 0]
+  grid_shape: [[256, 256], [256, 32], [256, 32]]
+  fov: [[-64, -64, -8], [64, 64, 8]]
+  num_neighbors: 16
+  voxel_size: 0.1
+  max_points: 20000
+  layernorm: True
+
+image_backbone:
+  images_encoder: "dinov3_vit_huge_p16"
+  feat: "x"
+  im_size: [224, 448]
+
+dataloader:
+  batch_size: 16
+  num_workers: 56
+  num_epochs: 1 # smoke check only -- the job's --time limit cuts this off well before completion
+
+optim:
+  lr: 0.003
+  weight_decay: 0.03
+  iter_warmup: 150
+  min_lr: 0.000001
+
+loss:
+  type: "l2"
+  collapse_weight: 0.0
+  collapse_margin: 0.5
+
+# Shrunk from the real pilot's 300 steps to 3, purely so a short 2-GPU
+# preliminary job can observe BOTH the freeze (steps 0-2) and the unfreeze
+# (step 3 on) DDP transitions within a couple of minutes, before committing
+# another 4-GPU/14h submission to the h200 queue. Not a config to train on --
+# see WI_768_xydrop_pilot.yaml for the real run.
+embed_warmup:
+  enabled: True
+  steps: 3
+
+warm_start_skip_prefixes:
+  - "embed.norm."
+  - "embed.conv1."
+  - "embed.conv2.0."
+  - "embed.conv2.1."

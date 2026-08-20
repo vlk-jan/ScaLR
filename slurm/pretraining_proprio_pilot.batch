@@ -1,0 +1,22 @@
+#!/bin/bash
+
+#SBATCH --nodes=1
+#SBATCH --ntasks-per-node=1
+#SBATCH --time=08:00:00                             # ~5.5h expected (3 epochs @ ~1.65-1.8h, cf. posinv/decorr pilots)
+#SBATCH --error=slurm/out/proprio_pilot_err.out
+#SBATCH --output=slurm/out/proprio_pilot_std.out
+#SBATCH --partition=h200                            # <24h job -> prefer h200 over h200long (higher priority); check 1dayamd QOS usage first
+#SBATCH --cpus-per-task=62                          # node has 124 effective
+#SBATCH --gres=gpu:4
+#SBATCH --mem=512G
+#SBATCH --mail-user=vlkjan6@fel.cvut.cz
+#SBATCH --mail-type=ALL
+
+# Proprioceptive-compression auxiliary pilot (WI_768_proprio_pilot.yaml):
+# fine-tunes full_v4 with a cooperative wheel-contact compression head next to
+# the DINOv3 distillation loss. See the yaml header for rationale and what to
+# watch; the acceptance test is DRIFT's probe_compression.py on the resulting
+# checkpoint, not the online curves.
+
+source .h200_env
+python distill.py --config configs/pretrain/WI_768_proprio_pilot.yaml --log_path logs/pretraining/proprio_pilot --dataset robotics --path_dataset /mnt/personal/vlkjan6/setprop --multiprocessing-distributed --bf16 --warm_start_ckpt logs/pretraining/full_v4/ckpt_last.pth

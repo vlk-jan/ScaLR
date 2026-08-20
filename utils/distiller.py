@@ -35,6 +35,102 @@ MAX_NONFINITE = 50
 
 AMP_DTYPES = {"fp16": torch.float16, "bf16": torch.bfloat16}
 
+# Width of each named channel in point_backbone.input_features, for locating the
+# xyz block inside the raw input tensor -- mirrors DRIFT's
+# scripts/analysis/visualize_wi_features.py::xyz_offset, which needs the same
+# slice for the same reason (probing what position information the network has
+# direct access to).
+FEATURE_WIDTHS = {"intensity": 1, "xyz": 3, "radius": 1, "height": 1, "constant": 1}
+
+
+def xyz_offset(input_features):
+    offset = 0
+    for name in input_features:
+        if name == "xyz":
+            return offset
+        offset += FEATURE_WIDTHS[name]
+    raise ValueError(f"input_features {input_features!r} has no 'xyz' entry")
+
+
+class GradientReversal(torch.autograd.Function):
+    """Identity forward, negated (and scaled) gradient backward -- the standard
+    DANN trick for adversarial training: whatever sits downstream of this op
+    is free to optimise its own loss normally, while gradients flowing back
+    through it push the upstream network AWAY from minimising that loss."""
+
+    @staticmethod
+    def forward(ctx, x, lambd):
+        ctx.lambd = lambd
+        return x.view_as(x)
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        return -ctx.lambd * grad_output, None
+
+
+def gradient_reversal(x, lambd=1.0):
+    return GradientReversal.apply(x, lambd)
+
+
+class PositionInvarianceHead(torch.nn.Module):
+    """Predicts (x, y, radius) from student point features through a
+    gradient-reversal layer, so training actively pushes the backbone away
+    from encoding recoverable ego-position/range instead of just hoping the
+    distillation objective doesn't reward it.
+
+    Motivation (see the drift-waffleiron-position-correlation investigation):
+    on real HELHEST/ROUGH scenes, both PC1 of the raw student features and the
+    frozen DINOv3 teacher's own targets predict (x, y) at R^2 0.5-1.0 -- the
+    student is faithfully reproducing a supervision signal that's already
+    geometry-dominated (fixed camera + deterministic point-to-pixel
+    projection). This head is the mechanism for testing whether pushing back
+    on that directly, rather than through more/different data, helps.
+    """
+
+    def __init__(self, in_channels, hidden_dim=128):
+        super().__init__()
+        self.net = torch.nn.Sequential(
+            torch.nn.Linear(in_channels, hidden_dim),
+            torch.nn.ReLU(inplace=True),
+            torch.nn.Linear(hidden_dim, hidden_dim),
+            torch.nn.ReLU(inplace=True),
+            torch.nn.Linear(hidden_dim, 3),  # (x, y, radius), normalised
+        )
+
+    def forward(self, feats, lambd):
+        return self.net(gradient_reversal(feats, lambd))
+
+
+class ProprioHead(torch.nn.Module):
+    """Predicts terrain compression (meters) from student point features, on
+    the sparse wheel-contact labels precomputed by DRIFT's
+    scripts/generate_proprio_labels.py (height_map - odometry wheel-bottom z
+    at driven cells).
+
+    Unlike PositionInvarianceHead this is a *cooperative* auxiliary: backbone
+    and head minimise the same loss, so the backbone is directly rewarded for
+    carrying compliance-relevant evidence. Motivation (see the
+    drift-waffleiron-position-correlation investigation and DRIFT's
+    probe_compression.py gate): the DINOv3 distillation target is appearance
+    semantics and provably carries little of the compression signal DRIFT's
+    height head needs (frozen-feature held-out R^2 0.32-0.55 vs 0.96 for four
+    trivial heightmap stats) -- this objective is the only supervision in the
+    stack denominated in that quantity.
+    """
+
+    def __init__(self, in_channels, hidden_dim=128):
+        super().__init__()
+        self.net = torch.nn.Sequential(
+            torch.nn.Linear(in_channels, hidden_dim),
+            torch.nn.ReLU(inplace=True),
+            torch.nn.Linear(hidden_dim, hidden_dim),
+            torch.nn.ReLU(inplace=True),
+            torch.nn.Linear(hidden_dim, 1),  # compression, meters
+        )
+
+    def forward(self, feats):
+        return self.net(feats).squeeze(-1)
+
 
 class Distiller:
     def __init__(
@@ -52,6 +148,12 @@ class Distiller:
         amp="off",
         tensorboard=True,
         loss_cfg=None,
+        input_features=None,
+        fov_xyz=None,
+        position_cfg=None,
+        decorr_cfg=None,
+        embed_warmup_cfg=None,
+        proprio_cfg=None,
     ):
 
         # Optim. methods
@@ -87,6 +189,111 @@ class Distiller:
         self.world_size = world_size
         print(f"Trainer on gpu: {self.rank}. World size:{self.world_size}.")
 
+        # Adversarial position-invariance head (see PositionInvarianceHead) and
+        # teacher-side target decorrelation (see decorrelate_target) both need
+        # to locate xyz in the raw input tensor and scale it to O(1); shared
+        # here so either can be enabled independently of the other.
+        position_cfg = position_cfg or {}
+        decorr_cfg = decorr_cfg or {}
+        self.position_enabled = bool(position_cfg.get("enabled", False))
+        self.decorr_enabled = bool(decorr_cfg.get("enabled", False))
+        self.position_head = None
+        self.position_optim = None
+        if self.position_enabled or self.decorr_enabled:
+            if input_features is None or fov_xyz is None:
+                raise ValueError(
+                    "position_invariance.enabled / target_decorrelation.enabled "
+                    "require input_features and fov_xyz (to locate xyz in the "
+                    "input tensor and normalise the regression target)."
+                )
+            self._xyz_off = xyz_offset(input_features)
+            # Half-extent of the fov box, for scaling (x, y, radius) to O(1) so
+            # position_invariance.weight is an interpretable knob rather than
+            # one that also has to absorb "fov is in meters, up to 64".
+            self._pos_scale = float(max(abs(v) for v in fov_xyz[0] + fov_xyz[1]))
+        if self.decorr_enabled:
+            # Below this many paired points, a 4-parameter OLS fit (x, y,
+            # radius, intercept) is too underdetermined/noisy to trust --
+            # leave that sample's target un-decorrelated rather than risk an
+            # unstable fit poisoning the distillation loss.
+            self.decorr_min_points = int(decorr_cfg.get("min_points", 20))
+        if self.position_enabled:
+            self.position_weight = float(position_cfg.get("weight", 0.05))
+            self.position_grl_lambda = float(position_cfg.get("grl_lambda", 1.0))
+            device = torch.device("cuda", self.rank) if self.rank is not None else torch.device("cuda")
+            head = PositionInvarianceHead(
+                in_channels=position_cfg["in_channels"],
+                hidden_dim=int(position_cfg.get("hidden_dim", 128)),
+            ).to(device)
+            if self.world_size and self.world_size > 1:
+                # Not wrapped anywhere else in this file because model_point is
+                # already wrapped (and broadcast-initialised) by distill.py
+                # before Distiller is constructed; this head is built here, so
+                # it has to do its own DDP wrap to get the same initial-weight
+                # broadcast and gradient sync across ranks.
+                head = torch.nn.parallel.DistributedDataParallel(
+                    head, device_ids=[self.rank]
+                )
+            self.position_head = head
+            self.position_optim = torch.optim.Adam(
+                self.position_head.parameters(), lr=float(position_cfg.get("lr", 1e-3))
+            )
+
+        # Proprioceptive compression auxiliary (see ProprioHead). Head runs on
+        # the same student output features distill_loss scores, so one combined
+        # backward() shapes the backbone from both signals.
+        proprio_cfg = proprio_cfg or {}
+        self.proprio_enabled = bool(proprio_cfg.get("enabled", False))
+        self.proprio_head = None
+        self.proprio_optim = None
+        if self.proprio_enabled:
+            self.proprio_weight = float(proprio_cfg.get("weight", 10.0))
+            # Huber transition point, meters. 0.05 matches DRIFT's
+            # HR_PROPRIO_HUBER_DELTA -- the label std at driven cells is
+            # ~0.09 m, so errors beyond ~half a std go linear.
+            self.proprio_huber_delta = float(proprio_cfg.get("huber_delta", 0.05))
+            device = torch.device("cuda", self.rank) if self.rank is not None else torch.device("cuda")
+            head = ProprioHead(
+                in_channels=proprio_cfg["in_channels"],
+                hidden_dim=int(proprio_cfg.get("hidden_dim", 128)),
+            ).to(device)
+            if self.world_size and self.world_size > 1:
+                # Same rationale as the position head's own DDP wrap above.
+                # Rank symmetry on unlabeled batches (only HELHEST samples
+                # carry labels) is guaranteed by proprio_loss's zero-loss
+                # dummy forward, NOT by find_unused_parameters -- that flag
+                # only covers unused parameters within a forward that ran,
+                # and a rank that skips the wrapped forward entirely
+                # desyncs the allreduce sequence and hangs NCCL (job
+                # 11366012). The flag stays on as cheap defense in depth.
+                head = torch.nn.parallel.DistributedDataParallel(
+                    head, device_ids=[self.rank], find_unused_parameters=True
+                )
+            self.proprio_head = head
+            self.proprio_optim = torch.optim.Adam(
+                self.proprio_head.parameters(), lr=float(proprio_cfg.get("lr", 1e-3))
+            )
+
+        # Embed-only warmup: freeze every parameter outside the input-facing
+        # Embedding module for the first `steps` optimizer steps of the run.
+        # For a warm start where the Embedding layer's input-side weights are
+        # skipped (see load_weights_only's skip_prefixes) because
+        # input_channels changed -- e.g. the xy-input-drop ablation, see
+        # drift-waffleiron-position-correlation -- the rest of the backbone
+        # (36 pretrained blocks) would otherwise take its first gradient steps
+        # against a freshly-initialised embedding producing garbage features,
+        # corrupting weights that took a full pretrain to reach. Freezing
+        # everything else lets the new embedding catch up in isolation first.
+        # No-op (steps=0) for a same-shape warm start, which needs no such
+        # protection.
+        embed_warmup_cfg = embed_warmup_cfg or {}
+        self.embed_warmup_steps = (
+            int(embed_warmup_cfg.get("steps", 0))
+            if embed_warmup_cfg.get("enabled", False)
+            else 0
+        )
+        self._embed_warmup_frozen = None  # tri-state: None/True/False, forces first toggle
+
         # Checkpoints
         self.current_epoch = 0
         self.path_to_ckpt = path
@@ -101,12 +308,29 @@ class Distiller:
         else:
             self.writer_train = None
 
-    def print_log(self, running_loss, div_point=None, div_image=None):
+    def print_log(
+        self,
+        running_loss,
+        div_point=None,
+        div_image=None,
+        pos_r2=None,
+        decorr_r2=None,
+        proprio=None,
+    ):
         if self.rank == 0 or self.rank is None:
             # Global score
             log = f"\nEpoch: {self.current_epoch:d} :\n" + f" Loss = {running_loss:.3f}"
             if div_point is not None:
                 log += f" | cos_point = {div_point:.3f} | cos_image = {div_image:.3f}"
+            if pos_r2 is not None:
+                log += f" | position_r2 = {pos_r2.mean().item():.3f}"
+            if decorr_r2 is not None:
+                log += f" | decorr_r2 = {decorr_r2:.3f}"
+            if proprio is not None:
+                log += (
+                    f" | proprio_huber = {proprio[0]:.4f}"
+                    f" | proprio_r2 = {proprio[1]:.3f}"
+                )
             print(log)
             sys.stdout.flush()
 
@@ -175,6 +399,179 @@ class Distiller:
         # collapse penalty on looks like the distillation got worse.
         return total, loss.detach(), div_k.detach(), div_q
 
+    def position_loss(self, feats, target):
+        """Adversarial position-invariance term (see PositionInvarianceHead).
+
+        feats: (N, C) raw student features -- the same `k` distill_loss scores
+        against the teacher, so gradients from both terms land on the same
+        upstream graph and one combined .backward() updates the backbone from
+        both signals at once.
+        target: (N, 3) normalised (x, y, radius) -- see position_target().
+
+        Returns (weighted_loss, unweighted_mse, r2_per_dim (3,)): r2_per_dim is
+        the actual diagnostic this whole thing is about (matches the R^2
+        computed post-hoc in the position-correlation investigation) -- log it
+        every run, not just the loss, since a falling loss and a falling R^2
+        are not the same claim (the head could just be getting better at a
+        fixed, unmoving task).
+        """
+        pred = self.position_head(feats.float(), self.position_grl_lambda)
+        target = target.float()
+        mse = F.mse_loss(pred, target)
+        with torch.no_grad():
+            ss_res = ((pred - target) ** 2).sum(dim=0)
+            ss_tot = ((target - target.mean(dim=0, keepdim=True)) ** 2).sum(dim=0)
+            r2 = 1 - ss_res / ss_tot.clamp_min(1e-8)
+        return self.position_weight * mse, mse.detach(), r2.detach()
+
+    def position_target(self, feat, pairing_points):
+        """(x, y, radius) for the paired points in one batch, normalised by
+        self._pos_scale, gathered from the same raw input tensor the network
+        sees (post-augmentation) -- i.e. exactly the position information
+        available for the network to shortcut through, not some independently
+        recomputed version of it."""
+        xyz = []
+        for b in range(len(pairing_points)):
+            xyz.append(feat[b, self._xyz_off : self._xyz_off + 3, :][:, pairing_points[b]])
+        xyz = torch.cat(xyz, dim=1).transpose(1, 0).float()  # (P, 3)
+        radius = xyz.norm(dim=-1, keepdim=True)
+        return torch.cat([xyz[:, :2], radius], dim=-1) / self._pos_scale
+
+    def proprio_loss(self, feat_point, proprio_labels, proprio_masks):
+        """Masked Huber between ProprioHead(student features) and the
+        wheel-contact compression labels, over the labeled points of the batch.
+
+        feat_point: (B, C, Nmax) student output features (zero-padded; label
+            index i refers to point i, padding is appended so indices are
+            stable). Runs on ALL labeled points, independent of the
+            camera-pairing subset -- driven cells behind the robot never
+            project into the front camera, and there is no reason to lose
+            their labels.
+        proprio_labels/proprio_masks: per-sample 1-D tensors (unpadded length).
+
+        Labels are deliberately uncentered (DRIFT measured per-window
+        centering deleting 69% of this signal's variance); the odometry
+        z-datum error (~0-2 cm/s of horizon) is absorbed by the Huber zone.
+
+        Returns (loss_term, huber_or_None, r2_or_None, n_points). When the
+        batch has no labeled points (ROUGH/RELLIS-only batches), the head is
+        STILL run -- on one dummy feature vector, scaled to contribute
+        exactly zero loss -- so its forward/backward happens on every rank
+        every iteration. This is load-bearing under DDP: if one rank skips
+        the wrapped head's forward entirely while another runs it, the ranks
+        enqueue different allreduce sequences and NCCL deadlocks into a
+        watchdog timeout (job 11366012 died exactly this way 13 min in;
+        find_unused_parameters only covers unused PARAMETERS within a
+        forward that ran, not a forward that never happened).
+        r2 is an online diagnostic of the head's fit on this batch, NOT the
+        offline gate -- DRIFT's probe_compression.py on the frozen features
+        remains the acceptance test for the resulting checkpoint.
+        """
+        k_lab, y_lab = [], []
+        for b in range(feat_point.shape[0]):
+            m = proprio_masks[b]
+            if m.any():
+                idx = m.nonzero(as_tuple=True)[0]
+                k_lab.append(feat_point[b, :, idx])
+                y_lab.append(proprio_labels[b][idx])
+        if not k_lab:
+            dummy = feat_point[:1, :, 0].float()  # (1, C)
+            zero = self.proprio_head(dummy).sum() * 0.0
+            return zero, None, None, 0
+        k_lab = torch.cat(k_lab, dim=1).transpose(1, 0).float()  # (P, C)
+        y_lab = torch.cat(y_lab, dim=0).float()  # (P,)
+        pred = self.proprio_head(k_lab)
+        huber = F.smooth_l1_loss(pred, y_lab, beta=self.proprio_huber_delta)
+        with torch.no_grad():
+            ss_res = ((pred - y_lab) ** 2).sum()
+            ss_tot = ((y_lab - y_lab.mean()) ** 2).sum()
+            r2 = 1 - ss_res / ss_tot.clamp_min(1e-8)
+        return self.proprio_weight * huber, huber.detach(), r2.detach(), y_lab.shape[0]
+
+    def decorrelate_target(self, feat, pairing_points, q):
+        """Removes, per sample, the component of the raw teacher target q that
+        is linearly predictable from that sample's own (x, y, radius) --
+        i.e. residualizes the distillation target against position instead of
+        just pushing the student away from encoding it (PositionInvarianceHead
+        does the latter). Motivation: the position-correlation investigation
+        found the *teacher's own* targets already predict (x, y) at R^2
+        0.90-0.98 on real scenes, so an adversarial term on the student is
+        fighting the training signal itself, not just backbone inertia -- this
+        instead attacks the correlation at its source.
+
+        Must be fit per sample, not pooled across the batch: each sample gets
+        an independent random rotation about z before `feat` is built
+        (im_pc_dataset.py's pc_augmentations), so a single regression across
+        the whole batch would only capture the rotation-INVARIANT part of the
+        leak (essentially just radius) and miss the local bearing-to-content
+        determinism that the per-scene R^2 above actually measures -- the same
+        reason position_target's batch-pooled (x, y, radius) is fine for the
+        adversarial head (one shared nonlinear head, trained over many steps)
+        but wrong for a single per-batch closed-form fit.
+
+        No gradient needed: q is already a frozen-teacher output, and the
+        regression coefficients are a deterministic function of this batch's
+        own (feat, q), not a learned parameter -- unlike PositionInvarianceHead
+        there is no state to warm up, so this is exactly as effective at
+        iteration 0 as at the end of training.
+
+        Returns (q_residual (P, C), mean_r2 (0-d tensor or None)): mean_r2 is
+        the fraction of each sample's target variance explained by its own
+        position, averaged over samples with enough points to fit -- log it as
+        a standing diagnostic (Pretrain/decorr_r2), same spirit as position_r2
+        for the adversarial head, but note it answers a different question:
+        this is measured in the batch's own augmented (rotated) frame, so it
+        is not directly comparable to the raw-frame R^2 from the offline
+        post-hoc probe used to validate whether decorrelation actually reduced
+        position-encodability -- that check still has to be run separately on
+        the resulting checkpoint's frozen features.
+        """
+        residuals = []
+        r2_sum, r2_count = 0.0, 0
+        with torch.no_grad():
+            q = q.float()
+            offset = 0
+            for b in range(len(pairing_points)):
+                n_b = pairing_points[b].shape[0]
+                q_b = q[offset : offset + n_b]
+                if n_b < self.decorr_min_points:
+                    residuals.append(q_b)
+                    offset += n_b
+                    continue
+                xyz_b = feat[b, self._xyz_off : self._xyz_off + 3, :][:, pairing_points[b]]
+                xyz_b = xyz_b.transpose(1, 0).float()  # (n_b, 3)
+                radius_b = xyz_b.norm(dim=-1, keepdim=True)
+                pos_b = torch.cat([xyz_b[:, :2], radius_b], dim=-1) / self._pos_scale
+                ones = torch.ones(n_b, 1, device=q.device, dtype=pos_b.dtype)
+                design = torch.cat([pos_b, ones], dim=1)  # (n_b, 4)
+                beta, *_ = torch.linalg.lstsq(design, q_b)
+                pred_b = design @ beta
+                resid_b = q_b - pred_b
+                residuals.append(resid_b)
+                ss_res = (resid_b**2).sum()
+                ss_tot = ((q_b - q_b.mean(dim=0, keepdim=True)) ** 2).sum()
+                r2_sum += (1 - ss_res / ss_tot.clamp_min(1e-8)).item()
+                r2_count += 1
+                offset += n_b
+            q_decorr = torch.cat(residuals, dim=0)
+            mean_r2 = torch.tensor(r2_sum / r2_count, device=q.device) if r2_count else None
+        return q_decorr, mean_r2
+
+    def _set_embed_warmup(self, frozen):
+        """Toggle requires_grad on every model_point parameter outside the
+        Embedding module. Cheap no-op when the state isn't changing -- called
+        once per training step, so must not do real work every call."""
+        if frozen == self._embed_warmup_frozen:
+            return
+        m = self.model_point.module if hasattr(self.model_point, "module") else self.model_point
+        for name, p in m.named_parameters():
+            if not name.startswith("embed."):
+                p.requires_grad_(not frozen)
+        self._embed_warmup_frozen = frozen
+        if self.rank == 0 or self.rank is None:
+            state = "frozen" if frozen else "unfrozen"
+            print(f"\n[embed_warmup] backbone params {state} at epoch {self.current_epoch}")
+
     def one_epoch(self):
         # Init.
         loader = self.loader_train
@@ -195,6 +592,21 @@ class Distiller:
         running_loss, running_total, running_div_k, running_div_q = (
             torch.zeros((), device=device) for _ in range(4)
         )
+        if self.position_enabled:
+            running_pos_mse = torch.zeros((), device=device)
+            running_pos_r2 = torch.zeros((3,), device=device)
+        if self.decorr_enabled:
+            running_decorr_r2 = torch.zeros((), device=device)
+            decorr_r2_count = 0
+        if self.proprio_enabled:
+            # All tensors (including the batch count): the gather protocol is
+            # positional and sums across ranks, and the number of
+            # proprio-labeled batches differs per rank (only HELHEST samples
+            # carry labels), so the count has to travel with the sums.
+            running_proprio_huber = torch.zeros((), device=device)
+            running_proprio_r2 = torch.zeros((), device=device)
+            running_proprio_n = torch.zeros((), device=device)
+            running_proprio_batches = torch.zeros((), device=device)
         nonfinite = 0
 
         # Loop over mini-batches
@@ -202,6 +614,10 @@ class Distiller:
             bar_format = "{desc:<5.5}{percentage:3.0f}%|{bar:50}{r_bar}"
             loader = tqdm(loader, bar_format=bar_format)
         for it, batch in enumerate(loader):
+            if self.embed_warmup_steps > 0:
+                global_step = self.current_epoch * len(self.loader_train) + it
+                self._set_embed_warmup(global_step < self.embed_warmup_steps)
+
             # Extract image features
             images = batch["images"].cuda(self.rank, non_blocking=True)
             with torch.autocast("cuda", enabled=self.amp_enabled, dtype=self.amp_dtype):
@@ -210,7 +626,10 @@ class Distiller:
 
             # Input to point network
             feat = batch["feat"].cuda(self.rank, non_blocking=True)
-            for key in ["pairing_points", "pairing_images"]:
+            keys = ["pairing_points", "pairing_images"]
+            if self.proprio_enabled:
+                keys += ["proprio_labels", "proprio_masks"]
+            for key in keys:
                 batch[key] = [p.cuda(self.rank, non_blocking=True) for p in batch[key]]
             cell_ind = batch["cell_ind"].cuda(self.rank, non_blocking=True)
             occupied_cell = batch["occupied_cells"].cuda(self.rank, non_blocking=True)
@@ -228,8 +647,39 @@ class Distiller:
                     q.append(feat_im[b : b + 1][m])
                 k = torch.cat(k, dim=1).transpose(1, 0)
                 q = torch.cat(q, dim=0)
+
+            # Teacher-side target decorrelation, before distill_loss sees q --
+            # see decorrelate_target. Runs in float32 outside autocast, same
+            # rationale as distill_loss's own normalisation.
+            decorr_r2 = None
+            if self.decorr_enabled:
+                q, decorr_r2 = self.decorrelate_target(feat, batch["pairing_points"], q)
+
             # Distillation loss, in float32 (see distill_loss)
             loss, distill, div_k, div_q = self.distill_loss(k, q)
+
+            # Adversarial position-invariance term, added into the same total
+            # so one backward() updates the backbone from both signals -- see
+            # position_loss/PositionInvarianceHead.
+            if self.position_enabled:
+                pos_target = self.position_target(feat, batch["pairing_points"])
+                pos_weighted, pos_mse, pos_r2 = self.position_loss(k, pos_target)
+                loss = loss + pos_weighted
+
+            # Proprioceptive compression auxiliary, into the same total for
+            # one combined backward -- see proprio_loss/ProprioHead. Uses
+            # feat_point (all points), not k (camera-paired subset).
+            proprio_stats = None
+            if self.proprio_enabled:
+                # Always added: on unlabeled batches the term is an exact
+                # zero that still runs the head's forward/backward on this
+                # rank (DDP allreduce symmetry -- see proprio_loss).
+                prop_weighted, prop_huber, prop_r2, prop_n = self.proprio_loss(
+                    feat_point, batch["proprio_labels"], batch["proprio_masks"]
+                )
+                loss = loss + prop_weighted
+                if prop_huber is not None:
+                    proprio_stats = (prop_huber, prop_r2, prop_n)
 
             # A non-finite loss means the forward pass overflowed -- under fp16
             # the student's activations can leave the float16 range entirely,
@@ -243,6 +693,17 @@ class Distiller:
                 running_total += loss.detach()
                 running_div_k += div_k
                 running_div_q += div_q
+                if self.position_enabled:
+                    running_pos_mse += pos_mse
+                    running_pos_r2 += pos_r2
+                if self.decorr_enabled and decorr_r2 is not None:
+                    running_decorr_r2 += decorr_r2
+                    decorr_r2_count += 1
+                if self.proprio_enabled and proprio_stats is not None:
+                    running_proprio_huber += proprio_stats[0]
+                    running_proprio_r2 += proprio_stats[1]
+                    running_proprio_n += proprio_stats[2]
+                    running_proprio_batches += 1
             else:
                 nonfinite += 1
                 if nonfinite in (1, 10) or nonfinite % 100 == 0:
@@ -262,6 +723,17 @@ class Distiller:
             if it % print_freq == print_freq - 1 or it == len(loader) - 1:
                 # Gather scores
                 stats = [running_loss, running_total, running_div_k, running_div_q]
+                if self.position_enabled:
+                    stats += [running_pos_mse, running_pos_r2]
+                if self.decorr_enabled:
+                    stats += [running_decorr_r2]
+                if self.proprio_enabled:
+                    stats += [
+                        running_proprio_huber,
+                        running_proprio_r2,
+                        running_proprio_n,
+                        running_proprio_batches,
+                    ]
                 if self.train_sampler is not None:
                     out = self.gather_scores(stats)
                 else:
@@ -269,10 +741,38 @@ class Distiller:
                 if self.rank == 0 or self.rank is None:
                     # Compute scores
                     loss_r, total_r, div_k_r, div_q_r = [
-                        t.item() / self.world_size / (it + 1) for t in out
+                        t.item() / self.world_size / (it + 1) for t in out[:4]
                     ]
+                    cursor = 4
+                    pos_r2_r = None
+                    if self.position_enabled:
+                        pos_mse_r = out[cursor].item() / self.world_size / (it + 1)
+                        pos_r2_r = out[cursor + 1] / self.world_size / (it + 1)
+                        cursor += 2
+                    decorr_r2_r = None
+                    if self.decorr_enabled:
+                        decorr_r2_r = out[cursor].item() / self.world_size / (it + 1)
+                        cursor += 1
+                    proprio_r = None
+                    if self.proprio_enabled:
+                        # Averaged over labeled batches (summed across ranks by
+                        # the gather), not over all iterations.
+                        n_lab = max(out[cursor + 3].item(), 1.0)
+                        proprio_r = (
+                            out[cursor].item() / n_lab,       # mean huber
+                            out[cursor + 1].item() / n_lab,   # mean online r2
+                            out[cursor + 2].item() / n_lab,   # mean pts/labeled batch
+                        )
+                        cursor += 4
                     # Print score
-                    self.print_log(loss_r, div_k_r, div_q_r)
+                    self.print_log(
+                        loss_r,
+                        div_k_r,
+                        div_q_r,
+                        pos_r2=pos_r2_r,
+                        decorr_r2=decorr_r2_r,
+                        proprio=proprio_r,
+                    )
                     # Save in tensorboard
                     if writer is not None:
                         header = "Pretrain"
@@ -284,10 +784,40 @@ class Distiller:
                         writer.add_scalar(
                             header + "/lr", self.optim.param_groups[0]["lr"], step
                         )
+                        if self.position_enabled:
+                            writer.add_scalar(header + "/position_mse", pos_mse_r, step)
+                            writer.add_scalar(
+                                header + "/position_r2", pos_r2_r.mean().item(), step
+                            )
+                            writer.add_scalar(
+                                header + "/position_r2_x", pos_r2_r[0].item(), step
+                            )
+                            writer.add_scalar(
+                                header + "/position_r2_y", pos_r2_r[1].item(), step
+                            )
+                            writer.add_scalar(
+                                header + "/position_r2_radius", pos_r2_r[2].item(), step
+                            )
+                        if self.decorr_enabled:
+                            writer.add_scalar(header + "/decorr_r2", decorr_r2_r, step)
+                        if self.proprio_enabled and proprio_r is not None:
+                            writer.add_scalar(
+                                header + "/proprio_huber", proprio_r[0], step
+                            )
+                            writer.add_scalar(
+                                header + "/proprio_r2", proprio_r[1], step
+                            )
+                            writer.add_scalar(
+                                header + "/proprio_pts_per_batch", proprio_r[2], step
+                            )
 
             # Gradient step. The scheduler advances either way, so that skipping
             # a poisoned step does not shift the whole LR schedule.
             self.optim.zero_grad(set_to_none=True)
+            if self.position_enabled:
+                self.position_optim.zero_grad(set_to_none=True)
+            if self.proprio_enabled:
+                self.proprio_optim.zero_grad(set_to_none=True)
             if not finite:
                 if self.scheduler is not None:
                     self.scheduler.step()
@@ -295,12 +825,100 @@ class Distiller:
             if self.scaler is not None:
                 self.scaler.scale(loss).backward()
                 self.scaler.step(self.optim)
+                if self.position_enabled:
+                    self.scaler.step(self.position_optim)
+                if self.proprio_enabled:
+                    self.scaler.step(self.proprio_optim)
                 self.scaler.update()
             else:
                 loss.backward()
                 self.optim.step()
+                if self.position_enabled:
+                    self.position_optim.step()
+                if self.proprio_enabled:
+                    self.proprio_optim.step()
             if self.scheduler is not None:
                 self.scheduler.step()
+
+    def load_weights_only(self, path, skip_prefixes=None):
+        """Load only model_point's weights from an arbitrary checkpoint path,
+        leaving optim/scheduler/scaler/epoch and the position head untouched
+        (fresh init, epoch 0). For a short fine-tune pilot from an existing
+        run's weights -- e.g. testing the position-invariance head without a
+        full from-scratch retrain -- as opposed to load_state(), which resumes
+        *this* run's own ckpt_last.pth including all training state.
+
+        Unlike load_state(), path is the exact file, not a log-dir-relative
+        ckpt_last.pth, and there is no epoch/current_epoch bookkeeping to get
+        wrong: current_epoch stays 0 and max_epoch (the pilot's own, typically
+        short) governs the loop as normal.
+
+        skip_prefixes: source state-dict keys starting with any of these are
+        dropped before loading, and the load becomes non-strict. For a pilot
+        that changes point_backbone.size_input (e.g. dropping xy from
+        input_features -- see drift-waffleiron-position-correlation), the
+        Embedding module's input-facing layers (embed.norm, embed.conv1,
+        embed.conv2.0, embed.conv2.1 -- see waffleiron/embedding.py) have a
+        different shape than the source checkpoint's and must be re-inited
+        fresh rather than loaded; everything else in the 36-block backbone is
+        input_channels-independent and loads unchanged. Pair with
+        embed_warmup_cfg so those freshly-inited layers get a chance to
+        produce sane features before the rest of the network trains against
+        them.
+        """
+        rank = 0 if self.rank is None else self.rank
+        ckpt = torch.load(path, map_location=f"cuda:{rank}", weights_only=False)
+        sd = ckpt["model_point"] if isinstance(ckpt, dict) and "model_point" in ckpt else ckpt
+        # Reconcile DDP's "module." prefix if source and target disagree on it.
+        target_keys = self.model_point.state_dict().keys()
+        target_has_prefix = any(k.startswith("module.") for k in target_keys)
+        src_has_prefix = any(k.startswith("module.") for k in sd.keys())
+        if target_has_prefix and not src_has_prefix:
+            sd = {f"module.{k}": v for k, v in sd.items()}
+        elif src_has_prefix and not target_has_prefix:
+            sd = {k[len("module.") :]: v for k, v in sd.items() if k.startswith("module.")}
+        if skip_prefixes:
+            # BatchNorm's num_batches_tracked is a scalar step counter, shape-
+            # independent of channels_in -- there's no reason to re-init it,
+            # so it's excluded from what gets dropped. It also has to be:
+            # nn.Module._load_from_state_dict special-cases a missing
+            # num_batches_tracked key for backward compatibility with
+            # pre-buffer checkpoints and does NOT add it to missing_keys, so
+            # dropping it here would desync `dropped` from load_state_dict's
+            # actual `missing` return and break the assertion below.
+            #
+            # skip_prefixes are written against the unwrapped key names
+            # (e.g. "embed.norm."); match against `k` with any "module."
+            # DDP prefix stripped, not `k` itself -- when source and target
+            # both come from a `--multiprocessing-distributed` run, the
+            # reconciliation block above is a no-op (neither side needs
+            # adjusting) and every key in `sd` still carries "module.",
+            # which would otherwise silently defeat every prefix match.
+            def _unwrapped(k):
+                return k[len("module.") :] if k.startswith("module.") else k
+
+            dropped = [
+                k
+                for k in sd
+                if any(_unwrapped(k).startswith(p) for p in skip_prefixes)
+                and not k.endswith("num_batches_tracked")
+            ]
+            sd = {k: v for k, v in sd.items() if k not in dropped}
+        missing, unexpected = self.model_point.load_state_dict(
+            sd, strict=not skip_prefixes
+        )
+        if skip_prefixes and (self.rank == 0 or self.rank is None):
+            assert not unexpected, f"Unexpected keys after partial load: {unexpected}"
+            assert set(missing) == set(dropped), (
+                f"Partial load missing-key mismatch: expected exactly the "
+                f"skipped keys {sorted(dropped)} to be missing, got {sorted(missing)}"
+            )
+            print(f"Partial warm start: re-initialised {len(dropped)} keys fresh: {dropped}")
+        if self.rank == 0 or self.rank is None:
+            print(
+                f"Warm-started model_point weights from {path} "
+                "(fresh optim/scheduler/position-head, epoch 0)."
+            )
 
     def load_state(self):
         filename = self.path_to_ckpt + "/ckpt_last.pth"
@@ -315,6 +933,24 @@ class Distiller:
             warnings.warn("Optimizer state not available")
         else:
             self.optim.load_state_dict(ckpt["optim"])
+        if self.position_enabled:
+            if ckpt.get("position_head") is None:
+                warnings.warn("Position-invariance head state not available; using fresh init")
+            else:
+                self.position_head.load_state_dict(ckpt["position_head"])
+            if ckpt.get("position_optim") is None:
+                warnings.warn("Position-invariance optimizer state not available")
+            else:
+                self.position_optim.load_state_dict(ckpt["position_optim"])
+        if self.proprio_enabled:
+            if ckpt.get("proprio_head") is None:
+                warnings.warn("Proprio head state not available; using fresh init")
+            else:
+                self.proprio_head.load_state_dict(ckpt["proprio_head"])
+            if ckpt.get("proprio_optim") is None:
+                warnings.warn("Proprio optimizer state not available")
+            else:
+                self.proprio_optim.load_state_dict(ckpt["proprio_optim"])
         if self.scheduler is not None:
             if ckpt.get("scheduler") is None:
                 warnings.warn("Scheduler state not available")
@@ -352,6 +988,12 @@ class Distiller:
                 if self.scaler is not None
                 else None,
             }
+            if self.position_enabled:
+                dict_to_save["position_head"] = self.position_head.state_dict()
+                dict_to_save["position_optim"] = self.position_optim.state_dict()
+            if self.proprio_enabled:
+                dict_to_save["proprio_head"] = self.proprio_head.state_dict()
+                dict_to_save["proprio_optim"] = self.proprio_optim.state_dict()
             filename = self.path_to_ckpt + "/ckpt_last.pth"
             torch.save(dict_to_save, filename)
 

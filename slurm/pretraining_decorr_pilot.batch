@@ -1,0 +1,29 @@
+#!/bin/bash
+
+#SBATCH --nodes=1                                   # 1 node
+#SBATCH --ntasks-per-node=1                         # 1 task per node
+#SBATCH --time=08:00:00                             # 3 epochs at full_v4's ~1.65h/epoch =~ 5h, padded
+#SBATCH --error=slurm/out/decorr_pilot_err.out      # standard error file
+#SBATCH --output=slurm/out/decorr_pilot_std.out     # standard output file
+#SBATCH --partition=h200long                        # partition name
+#SBATCH --cpus-per-task=62                          # number of CPUs (node has 124 effective)
+#SBATCH --gres=gpu:4                                # number of GPUs
+#SBATCH --mem=512G                                  # set memory requirement
+#SBATCH --mail-user=vlkjan6@fel.cvut.cz             # where send info about job
+#SBATCH --mail-type=ALL                             # what to send, valid type values are NONE, BEGIN, END, FAIL, REQUEUE, ALL
+
+# Pilot for teacher-side target decorrelation (see utils/distiller.py::
+# Distiller.decorrelate_target and the drift-waffleiron-position-correlation
+# memory). Warm-starts from full_v4's already-trained weights and fine-tunes
+# for 3 epochs with per-sample position-regression removed from the
+# distillation target, instead of a full from-scratch 25-epoch/1.7-day
+# retrain -- same structure as the position-invariance pilot (posinv_pilot,
+# job 11326886, which came back null: see the memory) so the two are directly
+# comparable.
+#
+# --warm_start_ckpt loads ONLY model_point's weights (fresh optim/scheduler,
+# epoch 0) -- not --restart, which would resume full_v4's own epoch-25
+# training state into a 3-epoch config and do nothing.
+
+source .h200_env
+python distill.py --config configs/pretrain/WI_768_decorr_pilot.yaml --log_path logs/pretraining/decorr_pilot --dataset robotics --path_dataset /mnt/personal/vlkjan6/setprop --multiprocessing-distributed --bf16 --warm_start_ckpt logs/pretraining/full_v4/ckpt_last.pth

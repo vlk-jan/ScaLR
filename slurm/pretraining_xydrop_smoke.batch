@@ -1,0 +1,24 @@
+#!/bin/bash
+
+#SBATCH --nodes=1
+#SBATCH --ntasks-per-node=1
+#SBATCH --time=00:20:00                             # smoke check only -- not a training run
+#SBATCH --error=slurm/out/xydrop_smoke_err.out
+#SBATCH --output=slurm/out/xydrop_smoke_std.out
+#SBATCH --partition=h200
+#SBATCH --cpus-per-task=32
+#SBATCH --gres=gpu:2                                # smaller ask than the real 4-GPU pilot -> faster to schedule
+#SBATCH --mem=256G
+
+# Preliminary check for the xy-input-drop pilot (WI_768_xydrop_pilot.yaml):
+# same code path (partial warm-start via skip_prefixes + embed_warmup under
+# real DDP) on a smaller GPU count and a shrunk embed_warmup window (3 steps
+# instead of 300) so both the freeze and unfreeze DDP transitions get
+# exercised within the 20-minute budget, before committing another 4-GPU/14h
+# job to the h200 queue. See drift-waffleiron-position-correlation memory for
+# why this exists: two prior submissions of the real pilot (11343370,
+# 11345876) both crashed at startup on DDP-specific bugs the non-DDP smoke
+# test couldn't catch.
+
+source .h200_env
+python distill.py --config configs/pretrain/WI_768_xydrop_smoke.yaml --log_path logs/pretraining/xydrop_smoke_check --dataset robotics --path_dataset /mnt/personal/vlkjan6/setprop --multiprocessing-distributed --bf16 --warm_start_ckpt logs/pretraining/full_v4/ckpt_last.pth

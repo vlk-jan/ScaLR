@@ -1,0 +1,88 @@
+point_backbone:
+  size_input: 3 # was 5: dropping the "xyz" feature block (3ch) for "height" (z only, 1ch)
+  # Controlled comparison arm for the position-correlation investigation (see
+  # drift-waffleiron-position-correlation): drops the raw (x, y) pass-through
+  # that both remediation pilots (GRL position-invariance head, job 11326886;
+  # teacher-target decorrelation, job 11331206) failed to neutralise from
+  # *outside* the input. "height" (z only) and "radius" are kept -- radius
+  # carries legitimate near/far range signal, height carries legitimate
+  # ground/vegetation-height signal, neither is the bearing-specific
+  # camera-content determinism that "xyz" (x, y both included) provides.
+  input_features: ["intensity", "height", "radius"]
+  nb_channels: 768
+  nb_class: 1280 # nb_class should match the size of the vit features
+  depth: 36
+  dim_proj: [2, 1, 0]
+  grid_shape: [[256, 256], [256, 32], [256, 32]]
+  fov: [[-64, -64, -8], [64, 64, 8]]
+  num_neighbors: 16
+  voxel_size: 0.1
+  max_points: 20000
+  layernorm: True
+
+image_backbone:
+  images_encoder: "dinov3_vit_huge_p16"
+  feat: "x"
+  im_size: [224, 448]
+
+dataloader:
+  batch_size: 16
+  num_workers: 56
+  # Longer than the other two pilots' 3 epochs (posinv_pilot, decorr_pilot):
+  # those only fine-tuned an unchanged-shape network a little. This one
+  # changes point_backbone.size_input (5->3), so the Embedding module's
+  # input-facing layers (embed.norm, embed.conv1, embed.conv2.0, embed.conv2.1
+  # -- see warm_start_skip_prefixes below) start from random init and feed
+  # into 36 pretrained blocks that have never seen their output distribution.
+  # 6 epochs is a judgment call, not a measured number -- double the other
+  # pilots' budget as a hedge against reproducing pilot #1's "did it even get
+  # a fair shot" ambiguity, paired with embed_warmup below so the random init
+  # doesn't corrupt the pretrained backbone before it's had a chance to
+  # settle. Revisit if Pretrain/loss hasn't stabilized by the end.
+  num_epochs: 6
+
+optim:
+  # Between full_v4's from-scratch 0.008 and the other two pilots' gentle-
+  # fine-tune 0.0008: the Embedding module needs to move a lot more than a
+  # converged backbone does, but most of the network (waffleiron.*, classif.*)
+  # is still a converged pretrained model that a from-scratch LR would disturb
+  # unnecessarily. Single LR for the whole optimizer (see embed_warmup for how
+  # the backbone is protected instead of using a separate lower LR for it).
+  lr: 0.003
+  weight_decay: 0.03
+  iter_warmup: 150
+  min_lr: 0.000001
+
+loss:
+  type: "l2"
+  collapse_weight: 0.0
+  collapse_margin: 0.5
+
+# Freezes every model_point parameter outside the Embedding module (see
+# utils/distiller.py::Distiller._set_embed_warmup) for the first `steps`
+# optimizer steps of epoch 0. Without this, the freshly re-inited embed.norm/
+# conv1/conv2.0/conv2.1 (see warm_start_skip_prefixes) would dump noisy
+# garbage features into the pretrained 36-block backbone from step 1,
+# corrupting weights that took full_v4's entire 25-epoch pretrain to reach.
+# 300 steps at batch_size=16 = 4800 samples -- a rough guess at "enough for
+# the new embed to stop producing garbage," not a measured number; watch
+# Pretrain/loss around step 300 in tensorboard for a discontinuity (too short:
+# a jump when the backbone unfreezes into a still-bad embed; too long: wasted
+# steps once the embed has already converged as far as it can while frozen).
+embed_warmup:
+  enabled: True
+  steps: 300
+
+# Consumed by Distiller.load_weights_only via distill.py, not target_decorrelation/
+# position_invariance's own cfg blocks. These are exactly the input_channels-
+# dependent parameters in waffleiron/embedding.py's Embedding module -- shape
+# (channels_out, size_input) or (size_input,) in the source full_v4 checkpoint,
+# incompatible with this run's size_input=3. Everything else in the checkpoint
+# (embed.conv2.2/.4, embed.final, all of waffleiron.*, classif.*) is
+# input_channels-independent and loads unchanged -- confirmed against
+# WaffleIron/waffleiron/embedding.py's Embedding.__init__.
+warm_start_skip_prefixes:
+  - "embed.norm."
+  - "embed.conv1."
+  - "embed.conv2.0."
+  - "embed.conv2.1."

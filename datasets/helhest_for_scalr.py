@@ -114,6 +114,42 @@ class HelhestDistill(ImPcDataset):
         pc = pc[np.sqrt(pc[:, 0]**2 + pc[:, 1]**2) > 0.5]
         return pc
 
+    def load_proprio_labels(self, index, pc):
+        """Wheel-contact compression labels precomputed by DRIFT's
+        scripts/generate_proprio_labels.py (<scene>/proprio_labels/<frame>.npz,
+        keyed by the same scene/frame indices as this dataset's clouds --
+        pcd_ts.txt verified identical row-for-row between the two HELHEST
+        copies). A missing file means "no labels for this frame".
+
+        The label grid lives in the gravity-aligned scan frame ([row=X,
+        col=Y], row = round(x/res + (n-1)/2) -- exactly DRIFT's
+        proprioceptive_support_target binning); this dataset's clouds are
+        raw/unaligned, so points are rotated by the stored R_align before the
+        cell lookup.
+        """
+        file_name = self.list_keyframes[index][0]
+        scene = file_name.split("/")[0]
+        stem = file_name.split("/")[-1].split(".")[0]
+        path = os.path.join(self.rootdir, scene, "proprio_labels", f"{stem}.npz")
+        if not os.path.exists(path):
+            return None
+        d = np.load(path)
+        comp = d["comp"].astype(np.float32)
+        valid = d["valid"]
+        res = float(d["res"])
+        n = comp.shape[-1]
+        center = (n - 1) / 2.0
+
+        xy = pc[:, :3] @ d["R_align"].astype(np.float32).T
+        row = np.rint(xy[:, 0] / res + center).astype(np.int64)
+        col = np.rint(xy[:, 1] / res + center).astype(np.int64)
+        inb = (row >= 0) & (row < n) & (col >= 0) & (col < n)
+        row_c = np.clip(row, 0, n - 1)
+        col_c = np.clip(col, 0, n - 1)
+        mask = inb & valid[row_c, col_c]
+        label = np.where(mask, comp[row_c, col_c], 0.0).astype(np.float32)
+        return label, mask
+
     def map_pc_to_image(self, pc, index, min_dist=0.25):
         # Cache image loading and matrix computations
         scene = self.list_keyframes[index][0].split("/")[0]

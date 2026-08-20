@@ -46,6 +46,10 @@ def get_datasets(config, args):
         "fov_xyz": config["point_backbone"]["fov"],
         "max_points": config["point_backbone"]["max_points"],
         "im_size": config["image_backbone"]["im_size"],
+        # 0.0 (default) keeps the stock pipeline; see tr.Translation.
+        "translation_range": (config.get("augmentations") or {}).get(
+            "translation_range", 0.0
+        ),
     }
 
     # Get datatset
@@ -153,8 +157,17 @@ def distributed_training(gpu, ngpus_per_node, args, config):
         if args.workers <= 0:
             args.workers = 1
         model_point = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model_point)
+        # find_unused_parameters=True only when embed_warmup is active: it
+        # freezes every non-embed param via requires_grad_ after DDP wraps
+        # the model, so the set of params that actually get gradient changes
+        # between the frozen and unfrozen phases. DDP's reducer is built from
+        # the graph at wrap time and errors ("Expected to have finished
+        # reduction...") if it's not told to expect that -- static_graph is
+        # not the fix here since it assumes a *fixed* graph across
+        # iterations, which is exactly what the freeze schedule violates.
+        find_unused = bool(config.get("embed_warmup", {}).get("enabled", False))
         model_point = torch.nn.parallel.DistributedDataParallel(
-            model_point, device_ids=[args.gpu]
+            model_point, device_ids=[args.gpu], find_unused_parameters=find_unused
         )
         # DistributedDataParallel is not needed when a module doesn't have any parameter that requires a gradient
         # So we do not apply DistributedDataParallel to model_image
@@ -185,6 +198,20 @@ def distributed_training(gpu, ngpus_per_node, args, config):
     scheduler = get_scheduler(optim, config, len(train_loader))
 
     # --- Training
+    position_cfg = config.get("position_invariance")
+    if position_cfg and position_cfg.get("enabled"):
+        # in_channels has to match the student's output width, i.e. the
+        # teacher's embed_dim (assert config["point_backbone"]["nb_class"] ==
+        # embed_dim in ImageTeacher) -- not hardcoded so the head stays correct
+        # if the teacher/config changes.
+        position_cfg = dict(position_cfg, in_channels=config["point_backbone"]["nb_class"])
+    decorr_cfg = config.get("target_decorrelation")
+    proprio_cfg = config.get("proprio_supervision")
+    if proprio_cfg and proprio_cfg.get("enabled"):
+        # Same in_channels reasoning as position_cfg above: the head runs on
+        # the student's output features (post-classif, teacher-width).
+        proprio_cfg = dict(proprio_cfg, in_channels=config["point_backbone"]["nb_class"])
+    embed_warmup_cfg = config.get("embed_warmup")
     mng = Distiller(
         model_point,
         model_image,
@@ -199,9 +226,19 @@ def distributed_training(gpu, ngpus_per_node, args, config):
         args.amp,
         tensorboard=True,
         loss_cfg=config.get("loss"),
+        input_features=config["point_backbone"]["input_features"],
+        fov_xyz=config["point_backbone"]["fov"],
+        position_cfg=position_cfg,
+        decorr_cfg=decorr_cfg,
+        embed_warmup_cfg=embed_warmup_cfg,
+        proprio_cfg=proprio_cfg,
     )
     if args.restart:
         mng.load_state()
+    elif args.warm_start_ckpt:
+        mng.load_weights_only(
+            args.warm_start_ckpt, skip_prefixes=config.get("warm_start_skip_prefixes")
+        )
     mng.train()
 
 
@@ -220,6 +257,9 @@ def main(args, config):
     args.dist_backend = "nccl"
     # Distributed processing
     args.distributed = args.multiprocessing_distributed
+
+    if args.restart and args.warm_start_ckpt:
+        raise ValueError("Pass at most one of --restart / --warm_start_ckpt.")
 
     # Mixed precision mode
     if args.fp16 and args.bf16:
@@ -292,6 +332,16 @@ def get_default_parser():
     )
     parser.add_argument(
         "--restart", action="store_true", default=False, help="Restart training"
+    )
+    parser.add_argument(
+        "--warm_start_ckpt",
+        type=str,
+        default=None,
+        help="Load only model_point's weights from this checkpoint (fresh "
+        "optim/scheduler/position-head, epoch 0) and train under this run's "
+        "own config -- for a short fine-tune pilot from an existing run's "
+        "weights (e.g. testing a new loss term) without a full from-scratch "
+        "retrain. Mutually exclusive with --restart.",
     )
     parser.add_argument(
         "--seed", default=None, type=int, help="Seed for initializing training"

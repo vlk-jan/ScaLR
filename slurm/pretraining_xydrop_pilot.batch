@@ -1,0 +1,35 @@
+#!/bin/bash
+
+#SBATCH --nodes=1                                   # 1 node
+#SBATCH --ntasks-per-node=1                         # 1 task per node
+#SBATCH --time=14:00:00                             # 6 epochs at full_v4's ~1.65h/epoch =~ 10h, padded
+#SBATCH --error=slurm/out/xydrop_pilot_err.out      # standard error file
+#SBATCH --output=slurm/out/xydrop_pilot_std.out     # standard output file
+#SBATCH --partition=h200                            # <24h predicted runtime -> h200 (higher priority than h200long)
+#SBATCH --cpus-per-task=62                          # number of CPUs (node has 124 effective)
+#SBATCH --gres=gpu:4                                # number of GPUs
+#SBATCH --mem=512G                                  # set memory requirement
+#SBATCH --mail-user=vlkjan6@fel.cvut.cz             # where send info about job
+#SBATCH --mail-type=ALL                             # what to send, valid type values are NONE, BEGIN, END, FAIL, REQUEUE, ALL
+
+# Controlled comparison arm for the position-correlation investigation (see
+# drift-waffleiron-position-correlation memory): drops WaffleIron's raw (x, y)
+# input-feature pass-through (point_backbone.input_features: xyz -> height),
+# the third remediation candidate after the GRL position-invariance head
+# (posinv_pilot, job 11326886, null) and teacher-target decorrelation
+# (decorr_pilot, job 11331206, null) both failed to reduce the frozen
+# features' linear position-decodability. Unlike those two, this changes
+# point_backbone.size_input (5 -> 3), so it cannot warm-start cleanly:
+# --warm_start_ckpt + config's warm_start_skip_prefixes re-initialises only
+# the Embedding module's input-facing layers (embed.norm/conv1/conv2.0/
+# conv2.1) fresh while loading the other 36 pretrained blocks unchanged from
+# full_v4; embed_warmup in the config freezes those 36 blocks for the first
+# 300 steps so the freshly-inited embedding doesn't corrupt them before
+# producing sane features. 6 epochs (double the other two pilots' 3) and
+# lr=0.003 (between full_v4's from-scratch 0.008 and the other pilots'
+# gentle-fine-tune 0.0008) are both judgment calls made when scoping this --
+# see the yaml's own comments for the reasoning, and watch Pretrain/loss
+# around step 300 for a discontinuity at the embed_warmup unfreeze point.
+
+source .h200_env
+python distill.py --config configs/pretrain/WI_768_xydrop_pilot.yaml --log_path logs/pretraining/xydrop_pilot --dataset robotics --path_dataset /mnt/personal/vlkjan6/setprop --multiprocessing-distributed --bf16 --warm_start_ckpt logs/pretraining/full_v4/ckpt_last.pth
