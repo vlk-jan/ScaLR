@@ -10,9 +10,15 @@ from .im_pc_dataset import ImPcDataset
 from .pc_dataset import PCDataset
 
 
-# For normalizing intensities
-MEAN_INT = 21.902271270751953
-STD_INT = 35.148033142089844
+# For normalizing intensities. Computed over the raw (NaN-filtered) intensity
+# column of 2000 random keyframe clouds from HELHEST; the previous values
+# (21.90 / 35.15) came from another dataset and left this channel at mean
+# -0.41 / std 0.60 instead of 0 / 1. Kept in lockstep with DRIFT's
+# datasets/helhest.py (commit c4a9729): a backbone pretrained here is consumed
+# frozen there, so the two loaders must normalize identically or the frozen
+# features are evaluated off-distribution.
+MEAN_INT = 7.220459702674483
+STD_INT = 20.783030484817523
 
 class HelhestSemSeg(PCDataset):
     CLASS_NAME = [
