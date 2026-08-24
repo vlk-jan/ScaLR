@@ -101,6 +101,16 @@ class PositionInvarianceHead(torch.nn.Module):
         return self.net(gradient_reversal(feats, lambd))
 
 
+# Best achievable Huber for a CONSTANT predictor on the wheel-contact
+# compression labels: min_c E|y - c| = 0.0521 m, measured exactly on a
+# 1200-frame point-level sample (labels are signed, 13.4% negative, mean 0.057,
+# std 0.090). Huber <= L1 always, so this bounds the constant predictor's Huber
+# from above and any useful head must come in under it. This is the acceptance
+# criterion for the proprio auxiliary; see ProprioHead's docstring for why v5
+# needed one.
+PROPRIO_CONSTANT_BOUND = 0.0521
+
+
 class ProprioHead(torch.nn.Module):
     """Predicts terrain compression (meters) from student point features, on
     the sparse wheel-contact labels precomputed by DRIFT's
@@ -110,17 +120,35 @@ class ProprioHead(torch.nn.Module):
     Unlike PositionInvarianceHead this is a *cooperative* auxiliary: backbone
     and head minimise the same loss, so the backbone is directly rewarded for
     carrying compliance-relevant evidence. Motivation (see the
-    drift-waffleiron-position-correlation investigation and DRIFT's
-    probe_compression.py gate): the DINOv3 distillation target is appearance
-    semantics and provably carries little of the compression signal DRIFT's
-    height head needs (frozen-feature held-out R^2 0.32-0.55 vs 0.96 for four
-    trivial heightmap stats) -- this objective is the only supervision in the
-    stack denominated in that quantity.
+    drift-waffleiron-position-correlation investigation): the DINOv3
+    distillation target is appearance semantics, and this objective is the only
+    supervision in the stack denominated in compression.
+
+    The "0.32-0.55 vs 0.96 for four trivial heightmap stats" comparison this
+    docstring used to cite is WITHDRAWN (2026-08-24). Both figures were
+    single-fold 66-window probe numbers whose four holdout offsets span
+    0.124-0.743, and the heightmap baseline is essentially ONE number, cell
+    height, which sits algebraically inside the target. Re-measured at 576
+    windows the frozen backbone adds a paired delta of +0.06-0.10 over that
+    baseline -- about 10x what hand-crafted LiDAR statistics add, so the
+    backbone was never the weak link the old comparison implied. See
+    ~/drift_readout/gate_power/FINDINGS.md.
+
+    LayerNorm on the input is load-bearing, not hygiene. v5 ran without it and
+    the head diverged -- v5_proprio_std.out shows running-mean huber prints of
+    124/240/306/435 through ~epoch 22, i.e. per-batch |pred| in the hundreds of
+    METRES against a +-0.5 m label -- while still feeding weight-10 gradients
+    into the backbone. It finished at huber 0.0707 when the best constant
+    predictor scores <= 0.0521 (min_c E|y-c| on the real label distribution).
     """
 
     def __init__(self, in_channels, hidden_dim=128):
         super().__init__()
         self.net = torch.nn.Sequential(
+            # Backbone features arrive unnormalised and their scale drifts over
+            # pretraining; without this the head chases a moving input
+            # distribution and never converges (v5).
+            torch.nn.LayerNorm(in_channels),
             torch.nn.Linear(in_channels, hidden_dim),
             torch.nn.ReLU(inplace=True),
             torch.nn.Linear(hidden_dim, hidden_dim),
@@ -154,6 +182,7 @@ class Distiller:
         decorr_cfg=None,
         embed_warmup_cfg=None,
         proprio_cfg=None,
+        print_freq=None,
     ):
 
         # Optim. methods
@@ -184,6 +213,8 @@ class Distiller:
 
         # Network
         self.model_point = model_point
+        # Steps between training log lines; None = ten per epoch (see train()).
+        self.print_freq = print_freq
         self.model_image = model_image
         self.rank = rank
         self.world_size = world_size
@@ -273,6 +304,48 @@ class Distiller:
             self.proprio_optim = torch.optim.Adam(
                 self.proprio_head.parameters(), lr=float(proprio_cfg.get("lr", 1e-3))
             )
+            # WHERE the auxiliary attaches. None = the student's final output,
+            # which is the classif projection (nb_class = 1280 wide, shaped to
+            # match the DINOv3 teacher) -- that is what v5 supervised.
+            #
+            # An integer K attaches it to the output of backbone layer K
+            # instead (nb_channels = 768 wide), via a forward hook on
+            # waffleiron.channel_mix[K-1]. One WaffleIron layer is SpatialMix
+            # followed by ChannelMix, so that hook's output IS the truncated
+            # backbone's output -- verified empirically in DRIFT, where the
+            # K=36 hook rows reproduce the full-forward rows exactly.
+            #
+            # Why attach early (DRIFT measurements, 576 windows, nested probes):
+            #   * SpatialMix is two depthwise Conv2d(3x3) per layer, so layers
+            #     7-36 aggregate over ~+-60 cells at 1 m -- a scene-scale
+            #     receptive field, not a terrain-scale one.
+            #   * K=36 retains only ~0.73 of K=6's compression-relevant
+            #     direction, against ~0.87-0.90 of its bulk variance.
+            #   * On the LOCAL (within-window, fixed-effects) component a K=6
+            #     backbone adds +0.101 over heightmap stats where K=36 adds
+            #     +0.039.
+            #   * If the deployed model truncates to K=12, pretraining should
+            #     optimise what K=12 emits, not what K=36 does.
+            # Asking the final layer to carry a quantity its own aggregation
+            # discards is a harder problem than it needs to be.
+            self.proprio_depth = proprio_cfg.get("depth")
+            self._proprio_feat = {}
+            if self.proprio_depth is not None:
+                K = int(self.proprio_depth)
+                core = (
+                    self.model_point.module
+                    if hasattr(self.model_point, "module")
+                    else self.model_point
+                )
+                n_layers = len(core.waffleiron.channel_mix)
+                if not 1 <= K <= n_layers:
+                    raise ValueError(
+                        f"proprio_supervision.depth={K} outside [1, {n_layers}]"
+                    )
+                core.waffleiron.channel_mix[K - 1].register_forward_hook(
+                    lambda module, inp, out: self._proprio_feat.__setitem__("x", out)
+                )
+                self.proprio_depth = K
 
         # Embed-only warmup: freeze every parameter outside the input-facing
         # Embedding module for the first `steps` optimizer steps of the run.
@@ -327,9 +400,29 @@ class Distiller:
             if decorr_r2 is not None:
                 log += f" | decorr_r2 = {decorr_r2:.3f}"
             if proprio is not None:
+                huber, pooled_r2, pts = proprio
+                log += f" | proprio_huber = {huber:.4f}"
                 log += (
-                    f" | proprio_huber = {proprio[0]:.4f}"
-                    f" | proprio_r2 = {proprio[1]:.3f}"
+                    f" | proprio_r2(pooled) = {pooled_r2:.3f}"
+                    if pooled_r2 is not None
+                    else " | proprio_r2(pooled) = n/a"
+                )
+                log += f" | proprio_pts/batch = {pts:.1f}"
+                # HARD ACCEPTANCE CRITERION, pre-registered.
+                # PROPRIO_CONSTANT_BOUND is the best a CONSTANT predictor can
+                # do on the real label distribution: min_c E|y - c| = 0.0521,
+                # measured exactly on a 1200-frame point-level sample, and
+                # Huber <= L1 always, so any head worth its gradients must beat
+                # it. v5 trained 25 epochs and finished at 0.0707 -- ~35% WORSE
+                # than emitting a constant -- while feeding weight-10 gradients
+                # into the backbone, and nothing in its logs said so.
+                # Do NOT substitute the predict-zero version of this bound:
+                # E|y| = 0.0703, which v5 clears by 0.0004 and which is
+                # therefore true and worthless.
+                verdict = "PASS" if huber < PROPRIO_CONSTANT_BOUND else "FAIL"
+                log += (
+                    f" | vs best-constant {PROPRIO_CONSTANT_BOUND:.4f}"
+                    f" -> {verdict}"
                 )
             print(log)
             sys.stdout.flush()
@@ -483,10 +576,23 @@ class Distiller:
         pred = self.proprio_head(k_lab)
         huber = F.smooth_l1_loss(pred, y_lab, beta=self.proprio_huber_delta)
         with torch.no_grad():
+            # Return the SUMS, not a per-batch ratio. The old code computed
+            # 1 - ss_res/ss_tot.clamp_min(1e-8) per batch and averaged over
+            # batches; ~2% of HELHEST frames deliver a single labeled point, so
+            # ss_tot = 0 there, the clamp turns it into ~-1e6, and the same
+            # frames recur every epoch. v5's reported proprio_r2 = -1.4e5 was
+            # that artifact, not a training signal -- the metric never measured
+            # the head, which is why nobody saw it had not learned. Pooling
+            # numerator and denominator and dividing ONCE at log time needs no
+            # clamp and no epsilon.
             ss_res = ((pred - y_lab) ** 2).sum()
             ss_tot = ((y_lab - y_lab.mean()) ** 2).sum()
-            r2 = 1 - ss_res / ss_tot.clamp_min(1e-8)
-        return self.proprio_weight * huber, huber.detach(), r2.detach(), y_lab.shape[0]
+        return (
+            self.proprio_weight * huber,
+            huber.detach(),
+            (ss_res.detach(), ss_tot.detach()),
+            y_lab.shape[0],
+        )
 
     def decorrelate_target(self, feat, pairing_points, q):
         """Removes, per sample, the component of the raw teacher target q that
@@ -584,7 +690,12 @@ class Distiller:
             self.train_sampler.set_epoch(self.current_epoch)
 
         # Log frequency
-        print_freq = np.max((len(loader) // 10, 1))
+        # Default: ten lines per epoch. A HELHEST epoch is ~22.9k steps, so
+        # that is a log line roughly every 22 minutes -- fine for a multi-day
+        # run and useless for a 40-minute smoke check, which needs to WATCH the
+        # aux converge or fail. Overridable from the config so the smoke can
+        # ask for a line every ~100 steps without touching the real runs.
+        print_freq = int(self.print_freq or np.max((len(loader) // 10, 1)))
 
         # Stat. Tensors from the start, so that a logging point reached before
         # any finite step still has something gatherable.
@@ -604,7 +715,8 @@ class Distiller:
             # proprio-labeled batches differs per rank (only HELHEST samples
             # carry labels), so the count has to travel with the sums.
             running_proprio_huber = torch.zeros((), device=device)
-            running_proprio_r2 = torch.zeros((), device=device)
+            running_proprio_ssres = torch.zeros((), device=device)
+            running_proprio_sstot = torch.zeros((), device=device)
             running_proprio_n = torch.zeros((), device=device)
             running_proprio_batches = torch.zeros((), device=device)
         nonfinite = 0
@@ -667,15 +779,21 @@ class Distiller:
                 loss = loss + pos_weighted
 
             # Proprioceptive compression auxiliary, into the same total for
-            # one combined backward -- see proprio_loss/ProprioHead. Uses
-            # feat_point (all points), not k (camera-paired subset).
+            # one combined backward -- see proprio_loss/ProprioHead. Uses all
+            # points, not k (the camera-paired subset).
             proprio_stats = None
             if self.proprio_enabled:
+                # Either the final classif output (depth None, v5 behaviour) or
+                # the layer-K backbone tokens captured by the hook above.
+                if self.proprio_depth is None:
+                    prop_feat = feat_point
+                else:
+                    prop_feat = self._proprio_feat.pop("x")
                 # Always added: on unlabeled batches the term is an exact
                 # zero that still runs the head's forward/backward on this
                 # rank (DDP allreduce symmetry -- see proprio_loss).
                 prop_weighted, prop_huber, prop_r2, prop_n = self.proprio_loss(
-                    feat_point, batch["proprio_labels"], batch["proprio_masks"]
+                    prop_feat, batch["proprio_labels"], batch["proprio_masks"]
                 )
                 loss = loss + prop_weighted
                 if prop_huber is not None:
@@ -701,7 +819,8 @@ class Distiller:
                     decorr_r2_count += 1
                 if self.proprio_enabled and proprio_stats is not None:
                     running_proprio_huber += proprio_stats[0]
-                    running_proprio_r2 += proprio_stats[1]
+                    running_proprio_ssres += proprio_stats[1][0]
+                    running_proprio_sstot += proprio_stats[1][1]
                     running_proprio_n += proprio_stats[2]
                     running_proprio_batches += 1
             else:
@@ -730,7 +849,8 @@ class Distiller:
                 if self.proprio_enabled:
                     stats += [
                         running_proprio_huber,
-                        running_proprio_r2,
+                        running_proprio_ssres,
+                        running_proprio_sstot,
                         running_proprio_n,
                         running_proprio_batches,
                     ]
@@ -757,13 +877,21 @@ class Distiller:
                     if self.proprio_enabled:
                         # Averaged over labeled batches (summed across ranks by
                         # the gather), not over all iterations.
-                        n_lab = max(out[cursor + 3].item(), 1.0)
+                        n_lab = max(out[cursor + 4].item(), 1.0)
+                        ss_res = out[cursor + 1].item()
+                        ss_tot = out[cursor + 2].item()
+                        # POOLED r2: sums accumulated across batches and ranks,
+                        # divided once here. No clamp, no epsilon, and immune to
+                        # the single-valued batches that made the old per-batch
+                        # average read -1.4e5. Reported as None until enough
+                        # label variance has accumulated to make it meaningful.
+                        pooled_r2 = (1.0 - ss_res / ss_tot) if ss_tot > 1e-6 else None
                         proprio_r = (
                             out[cursor].item() / n_lab,       # mean huber
-                            out[cursor + 1].item() / n_lab,   # mean online r2
-                            out[cursor + 2].item() / n_lab,   # mean pts/labeled batch
+                            pooled_r2,                        # POOLED r2
+                            out[cursor + 3].item() / n_lab,   # mean pts/labeled batch
                         )
-                        cursor += 4
+                        cursor += 5
                     # Print score
                     self.print_log(
                         loss_r,
@@ -804,11 +932,22 @@ class Distiller:
                             writer.add_scalar(
                                 header + "/proprio_huber", proprio_r[0], step
                             )
-                            writer.add_scalar(
-                                header + "/proprio_r2", proprio_r[1], step
-                            )
+                            # Pooled r2 is None until enough label variance has
+                            # accumulated for the ratio to mean anything; skip
+                            # the scalar rather than logging a placeholder.
+                            if proprio_r[1] is not None:
+                                writer.add_scalar(
+                                    header + "/proprio_r2", proprio_r[1], step
+                                )
                             writer.add_scalar(
                                 header + "/proprio_pts_per_batch", proprio_r[2], step
+                            )
+                            # The acceptance criterion, as a curve: negative
+                            # means the head is beating a constant predictor.
+                            writer.add_scalar(
+                                header + "/proprio_huber_margin",
+                                PROPRIO_CONSTANT_BOUND - proprio_r[0],
+                                step,
                             )
 
             # Gradient step. The scheduler advances either way, so that skipping

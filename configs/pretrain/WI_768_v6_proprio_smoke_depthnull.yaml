@@ -1,0 +1,150 @@
+# CONTROL ARM for the v6 smoke. Identical to WI_768_v6_proprio_smoke.yaml
+# except the auxiliary attaches where v5 put it -- the final classif output
+# (nb_class = 1280 wide, projected to match the DINOv3 teacher) -- instead of
+# backbone layer 12.
+#
+# This exists so the two v6 changes can be separated:
+#   this file  = LayerNorm + pooled r2, v5's ATTACH POINT
+#   the other  = LayerNorm + pooled r2, attached at layer 12
+# If both pass, the LayerNorm was the binding fix and depth is a refinement.
+# If only the layer-12 arm passes, the attach point mattered too. If neither
+# passes, the head has a problem neither change addresses and the full 48 h
+# run must not be launched.
+#
+# Job 11399901 ran exactly this configuration (submitted before the depth key
+# was added to the sibling config); this file is here so that run is
+# reproducible rather than only described.
+
+# SMOKE CHECK for v6 — NOT a training run. Purpose: answer one question
+# cheaply, before committing an ~48 h 4-GPU h200long job.
+#
+#   DOES THE AUX HEAD LEARN AT ALL?
+#
+# Pass/fail, printed every epoch by the distiller: proprio_huber < 0.0521, the
+# best-constant bound. v5 finished a full 25-epoch run at 0.0707 and would have
+# failed this from the start. A few hundred steps is enough to see the huber
+# fall through the bound if the LayerNorm fix works, and enough to see it flat
+# or diverging if it does not.
+#
+# Also watch: proprio_r2(pooled) should become a finite number in [0, 1) rather
+# than the -1.4e5 v5 reported, and proprio_pts/batch should be O(100) -- if it
+# is near zero the labels are not reaching the loss and nothing else matters.
+#
+# 2 GPUs rather than 4 so it schedules fast. Real run:
+# configs/pretrain/WI_768_h200_v6_proprio.yaml.
+
+# v6 — the proprio-compression auxiliary, retried with v5's failure fixed.
+#
+# WHY v5 FAILED, and it was not the idea. v5 lost a 50-epoch end-to-end A/B
+# against the production backbone by 2.04x on val total and 2.49x on
+# hr_proprio. Cause, diagnosed afterwards: THE AUX HEAD NEVER LEARNED. It
+# finished at proprio_huber 0.0707 when the best CONSTANT predictor scores
+# <= 0.0521 (min_c E|y-c| on the real label distribution) -- ~35% worse than
+# emitting a number -- while feeding weight-10 gradients into the backbone for
+# ~22 epochs. Its own diagnostic could not show this: proprio_r2 was computed
+# per batch as 1 - ss_res/ss_tot.clamp_min(1e-8), and ~2% of HELHEST frames
+# deliver a single labeled point, so the metric read -1.4e5 for the whole run
+# and was ignored as obviously broken rather than read as a failure.
+#
+# WHAT CHANGED FOR v6
+#   1. LayerNorm on the aux head's input (ProprioHead). v5 ran without it and
+#      diverged to per-batch |pred| in the hundreds of METRES against a +-0.5 m
+#      label (v5_proprio_std.out running means 124/240/306/435 through ~ep 22).
+#   2. Pooled r2 -- ss_res and ss_tot accumulated across batches and ranks,
+#      divided once at log time. No clamp, no epsilon, immune to single-valued
+#      batches. The metric now measures the head.
+#   3. A HARD, PRE-REGISTERED ACCEPTANCE CRITERION printed every epoch:
+#      proprio_huber must come in under 0.0521. v5 would have failed this from
+#      epoch 1 and the run could have been killed in an hour instead of 48.
+#   4. weight 10.0 -> 2.0. At 10.0 the aux started co-equal with the distill
+#      loss (~0.9 vs ~1.0), so a head that was not learning still dominated the
+#      backbone's gradient. 2.0 leaves it a real but non-controlling term; raise
+#      it only once the head is demonstrably under the bound.
+#
+# WHAT DID NOT CHANGE, DELIBERATELY. The backbone, teacher, optimiser, schedule
+# and augmentations are v5's, so this is a clean A/B on the aux fix alone.
+#
+# ACCEPTANCE. Run the smoke config first (WI_768_v6_proprio_smoke.yaml) and do
+# not launch this until proprio_huber is under 0.0521 there. Then judge the
+# result with DRIFT's scripts/analysis/probe_compression.py at its CURRENT
+# defaults (576 windows, all folds) on the PAIRED delta column against
+# `current`, plus the within-window delta under fixed effects, and finally a
+# 50-epoch end-to-end A/B.
+#
+# DO NOT judge it the way v5 was judged. v5 was accepted on a flat depth curve
+# and a features+stats lead of +0.035; both were 66-window single-fold numbers
+# whose four holdout offsets span 0.124-0.743, and at that sample size the
+# probe was fitting 768 features to ~721 training cells (p/n = 1.06), so the
+# features-alone column was an overfitting artifact. Absolute comparisons
+# against the "0.416 heightmap-stats baseline" are withdrawn -- that baseline
+# is essentially one number, cell height, which sits algebraically inside the
+# target. See ~/drift_readout/gate_power/FINDINGS.md.
+
+point_backbone:
+  size_input: 5
+  input_features: ["intensity", "xyz", "radius"]
+  nb_channels: 768
+  nb_class: 1280 # nb_class should match the size of the vit features
+  depth: 36
+  dim_proj: [2, 1, 0]
+  grid_shape: [[256, 256], [256, 32], [256, 32]]
+  fov: [[-64, -64, -8], [64, 64, 8]]
+  num_neighbors: 16
+  voxel_size: 0.1
+  max_points: 20000
+  layernorm: True
+
+image_backbone:
+  images_encoder: "dinov3_vit_huge_p16"
+  feat: "x"
+  im_size: [224, 448]
+
+dataloader:
+  # 8, NOT 16. distill.py:151 divides the config batch_size by ngpus_per_node,
+  # so this is a GLOBAL batch. The validated per-GPU load is 4 (v4/v5 ran
+  # global 16 on 4 GPUs); leaving 16 here with --gres=gpu:2 gives 8/GPU and
+  # OOMs an H200 at ~140 GiB (job 11399896, failed at 2m40s). 8 on 2 GPUs
+  # reproduces the proven 4/GPU exactly.
+  batch_size: 8
+  num_workers: 56
+  # A HELHEST epoch is ~22.9k steps and the default is ten log lines per epoch,
+  # i.e. one line every ~22 minutes -- a 40-minute smoke would see at most two.
+  # 100 gives a line every ~1 minute so the aux curve is actually watchable.
+  print_freq: 100
+
+  num_epochs: 1   # smoke: the job --time limit cuts this off; we only need the aux curve
+
+optim:
+  lr: 0.008
+  weight_decay: 0.03
+  iter_warmup: 100
+  min_lr: 0.00001
+
+loss:
+  type: "l2"
+  collapse_weight: 0.0
+  collapse_margin: 0.5
+
+augmentations:
+  translation_range: 10.0
+
+proprio_supervision:
+  enabled: True
+  # 10.0 in v5 made the aux co-equal with the distillation loss while its head
+  # was diverging. 2.0 keeps it a real term without letting an unconverged head
+  # steer the backbone.
+  weight: 2.0
+  hidden_dim: 128
+  lr: 0.001
+  huber_delta: 0.05
+  # Attach the auxiliary to backbone layer 12, NOT the final classif output.
+  # v5 supervised the post-classif features (1280-wide, projected to match the
+  # DINOv3 teacher). DRIFT's measurements say that is the wrong place: layers
+  # 7-36 aggregate over ~+-60 m, K=36 retains only ~0.73 of K=6's
+  # compression-relevant direction, and on the local component a K=6 backbone
+  # adds +0.101 over heightmap stats where K=36 adds +0.039. 12 rather than 6
+  # because it is also the truncation depth staged in DRIFT
+  # (configs/models_geom_k12.yaml) -- pretraining should optimise what the
+  # deployed model actually emits. Set to null to reproduce v5's placement.
+  depth: null
+

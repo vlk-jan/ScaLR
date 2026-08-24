@@ -1,0 +1,36 @@
+#!/bin/bash
+
+#SBATCH --nodes=1
+#SBATCH --ntasks-per-node=1
+#SBATCH --time=60:00:00
+#SBATCH --error=slurm/out/v6_proprio_err.out
+#SBATCH --output=slurm/out/v6_proprio_std.out
+#SBATCH --partition=h200long
+#SBATCH --cpus-per-task=62
+#SBATCH --gres=gpu:4
+#SBATCH --mem=512G
+#SBATCH --mail-user=vlkjan6@fel.cvut.cz
+#SBATCH --mail-type=FAIL
+
+# Full from-scratch retrain with the proprio-compression auxiliary, v5 retried
+# with its failure fixed. See configs/pretrain/WI_768_h200_v6_proprio.yaml for
+# the full rationale.
+#
+# DO NOT SUBMIT THIS UNTIL slurm/pretraining_v6_proprio_smoke.batch PRINTS PASS.
+# That job answers, in 40 minutes on 2 GPUs, the question v5 spent 48 hours
+# failing to answer: does the aux head learn at all? v5 finished at
+# proprio_huber 0.0707 against a best-constant bound of 0.0521 while feeding
+# weight-10 gradients into the backbone, and its own diagnostic could not show
+# it because proprio_r2 was a per-batch ratio with a clamped denominator.
+#
+# From scratch by design, as v5 was: the aux should shape the features from
+# epoch 0 rather than be retrofitted. No --warm_start_ckpt.
+#
+# Judge the result on DRIFT's probe_compression.py at its current defaults
+# (576 windows, all folds), PAIRED delta column against `current`, plus the
+# within-window delta under fixed effects, then a 50-epoch end-to-end A/B.
+# Do not judge it on features-alone or on a flat depth curve -- those are the
+# criteria that accepted v5, and both were 66-window artifacts.
+
+source .h200_env
+python distill.py --config configs/pretrain/WI_768_h200_v6_proprio.yaml --log_path logs/pretraining/full_v6_proprio --dataset robotics --path_dataset /mnt/personal/vlkjan6/setprop --multiprocessing-distributed --bf16

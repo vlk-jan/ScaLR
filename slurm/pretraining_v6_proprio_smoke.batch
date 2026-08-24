@@ -1,0 +1,73 @@
+#!/bin/bash
+
+#SBATCH --nodes=1
+#SBATCH --ntasks-per-node=1
+#SBATCH --time=00:40:00                             # smoke check only -- NOT a training run
+#SBATCH --error=slurm/out/v6_proprio_smoke_d12_err.out
+#SBATCH --output=slurm/out/v6_proprio_smoke_d12_std.out
+#SBATCH --partition=h200
+#SBATCH --cpus-per-task=32
+#SBATCH --gres=gpu:2                                # smaller ask than the real 4-GPU job -> schedules faster
+#SBATCH --mem=256G
+#SBATCH --mail-user=vlkjan6@fel.cvut.cz
+#SBATCH --mail-type=FAIL
+#SBATCH --exclude=h01                               # see note below
+
+# EXCLUDING h01 -- HARDWARE FAULT, not a scheduling or code problem.
+#
+# Two of h01's GPUs are in the driver's "GPU Reset Required" state and slurm
+# still hands them out. Reproduced in 7 s by a 4-line script (job 11400110):
+#
+#   dmesg:
+#     NVRM: Xid (PCI:0000:64:00): 95, pid=..., name=python   <- uncontained ECC
+#     NVRM: Xid (PCI:0000:65:00): 95, pid=..., name=python
+#     NVRM: Xid (PCI:0000:64:00): 154, GPU recovery action
+#                    changed from 0x0 (None) to 0x1 (GPU Reset Required)
+#     NVRM: Xid (PCI:0000:65:00): 154, ... (same)
+#
+#   In a gpu:2 allocation on h01 we get 0000:04:00.0 (healthy) and
+#   0000:64:00.0 (faulted, UUID GPU-a45d4f60-5522-55d1-ef78-90b97061d32c):
+#     cuda:0  OK
+#     cuda:1  FAIL  CUDA error: CUDA-capable device(s) is/are busy or unavailable
+#
+# Ruled out by the same job: MIG (Disabled on both), compute mode (Default, so
+# not exclusive-mode contention), stale contexts (0 MiB used, no compute apps),
+# ECC counters (0 uncorrectable), remapping failures (No).
+#
+# Until an admin runs nvidia-smi -r on those two devices or the node reboots,
+# ANY job scheduled onto them dies instantly at torch.cuda.set_device. That
+# also explains why h01 was carrying five single-GPU jobs and still showed
+# 3 GPUs "free": two of the three were unusable.
+#
+# Remove this line once h01 is confirmed reset.
+
+# ONE QUESTION: does the proprio aux head learn, now that its input is
+# LayerNormed and its diagnostic is pooled rather than per-batch?
+#
+# Pass/fail is printed every epoch by the distiller:
+#     proprio_huber < 0.0521   (the best-constant bound, min_c E|y-c|)
+# v5 trained 25 epochs and finished at 0.0707 -- ~35% WORSE than emitting a
+# constant -- and nothing in its logs said so, because proprio_r2 was a
+# per-batch ratio with a clamped denominator that read -1.4e5 all run and was
+# dismissed as broken. This job exists so that failure costs 40 minutes on 2
+# GPUs instead of 48 hours on 4.
+#
+# Warm-started from full_v4 ON PURPOSE, even though the real v6 run is from
+# scratch. The question here is whether the HEAD converges on a realistic
+# feature distribution; starting from random features would leave the head
+# fitting noise for the whole budget and the result would be uninformative
+# either way. The real run (pretraining_h200_v6_proprio.batch) is from scratch.
+#
+# Also watch:
+#   proprio_r2(pooled)   should be a finite number in [0, 1), not -1.4e5
+#   proprio_pts/batch    should be O(100). If it is ~0 the labels are not
+#                        reaching the loss and nothing else in the log matters.
+#
+# Do NOT launch the full v6 job until this prints PASS.
+
+# Fragmentation guard -- the teacher's activations are large and the first
+# submission died on a 96 MiB allocation with 1.87 GiB reserved-but-unallocated.
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+
+source .h200_env
+python distill.py --config configs/pretrain/WI_768_v6_proprio_smoke.yaml --log_path logs/pretraining/v6_proprio_smoke_d12 --dataset robotics --path_dataset /mnt/personal/vlkjan6/setprop --multiprocessing-distributed --bf16 --warm_start_ckpt logs/pretraining/full_v4/ckpt_last.pth

@@ -1,0 +1,105 @@
+# v6 — the proprio-compression auxiliary, retried with v5's failure fixed.
+#
+# WHY v5 FAILED, and it was not the idea. v5 lost a 50-epoch end-to-end A/B
+# against the production backbone by 2.04x on val total and 2.49x on
+# hr_proprio. Cause, diagnosed afterwards: THE AUX HEAD NEVER LEARNED. It
+# finished at proprio_huber 0.0707 when the best CONSTANT predictor scores
+# <= 0.0521 (min_c E|y-c| on the real label distribution) -- ~35% worse than
+# emitting a number -- while feeding weight-10 gradients into the backbone for
+# ~22 epochs. Its own diagnostic could not show this: proprio_r2 was computed
+# per batch as 1 - ss_res/ss_tot.clamp_min(1e-8), and ~2% of HELHEST frames
+# deliver a single labeled point, so the metric read -1.4e5 for the whole run
+# and was ignored as obviously broken rather than read as a failure.
+#
+# WHAT CHANGED FOR v6
+#   1. LayerNorm on the aux head's input (ProprioHead). v5 ran without it and
+#      diverged to per-batch |pred| in the hundreds of METRES against a +-0.5 m
+#      label (v5_proprio_std.out running means 124/240/306/435 through ~ep 22).
+#   2. Pooled r2 -- ss_res and ss_tot accumulated across batches and ranks,
+#      divided once at log time. No clamp, no epsilon, immune to single-valued
+#      batches. The metric now measures the head.
+#   3. A HARD, PRE-REGISTERED ACCEPTANCE CRITERION printed every epoch:
+#      proprio_huber must come in under 0.0521. v5 would have failed this from
+#      epoch 1 and the run could have been killed in an hour instead of 48.
+#   4. weight 10.0 -> 2.0. At 10.0 the aux started co-equal with the distill
+#      loss (~0.9 vs ~1.0), so a head that was not learning still dominated the
+#      backbone's gradient. 2.0 leaves it a real but non-controlling term; raise
+#      it only once the head is demonstrably under the bound.
+#
+# WHAT DID NOT CHANGE, DELIBERATELY. The backbone, teacher, optimiser, schedule
+# and augmentations are v5's, so this is a clean A/B on the aux fix alone.
+#
+# ACCEPTANCE. Run the smoke config first (WI_768_v6_proprio_smoke.yaml) and do
+# not launch this until proprio_huber is under 0.0521 there. Then judge the
+# result with DRIFT's scripts/analysis/probe_compression.py at its CURRENT
+# defaults (576 windows, all folds) on the PAIRED delta column against
+# `current`, plus the within-window delta under fixed effects, and finally a
+# 50-epoch end-to-end A/B.
+#
+# DO NOT judge it the way v5 was judged. v5 was accepted on a flat depth curve
+# and a features+stats lead of +0.035; both were 66-window single-fold numbers
+# whose four holdout offsets span 0.124-0.743, and at that sample size the
+# probe was fitting 768 features to ~721 training cells (p/n = 1.06), so the
+# features-alone column was an overfitting artifact. Absolute comparisons
+# against the "0.416 heightmap-stats baseline" are withdrawn -- that baseline
+# is essentially one number, cell height, which sits algebraically inside the
+# target. See ~/drift_readout/gate_power/FINDINGS.md.
+
+point_backbone:
+  size_input: 5
+  input_features: ["intensity", "xyz", "radius"]
+  nb_channels: 768
+  nb_class: 1280 # nb_class should match the size of the vit features
+  depth: 36
+  dim_proj: [2, 1, 0]
+  grid_shape: [[256, 256], [256, 32], [256, 32]]
+  fov: [[-64, -64, -8], [64, 64, 8]]
+  num_neighbors: 16
+  voxel_size: 0.1
+  max_points: 20000
+  layernorm: True
+
+image_backbone:
+  images_encoder: "dinov3_vit_huge_p16"
+  feat: "x"
+  im_size: [224, 448]
+
+dataloader:
+  batch_size: 16
+  num_workers: 56
+  num_epochs: 25
+
+optim:
+  lr: 0.008
+  weight_decay: 0.03
+  iter_warmup: 1500
+  min_lr: 0.00001
+
+loss:
+  type: "l2"
+  collapse_weight: 0.0
+  collapse_margin: 0.5
+
+augmentations:
+  translation_range: 10.0
+
+proprio_supervision:
+  enabled: True
+  # 10.0 in v5 made the aux co-equal with the distillation loss while its head
+  # was diverging. 2.0 keeps it a real term without letting an unconverged head
+  # steer the backbone.
+  weight: 2.0
+  hidden_dim: 128
+  lr: 0.001
+  huber_delta: 0.05
+  # Attach the auxiliary to backbone layer 12, NOT the final classif output.
+  # v5 supervised the post-classif features (1280-wide, projected to match the
+  # DINOv3 teacher). DRIFT's measurements say that is the wrong place: layers
+  # 7-36 aggregate over ~+-60 m, K=36 retains only ~0.73 of K=6's
+  # compression-relevant direction, and on the local component a K=6 backbone
+  # adds +0.101 over heightmap stats where K=36 adds +0.039. 12 rather than 6
+  # because it is also the truncation depth staged in DRIFT
+  # (configs/models_geom_k12.yaml) -- pretraining should optimise what the
+  # deployed model actually emits. Set to null to reproduce v5's placement.
+  depth: 12
+

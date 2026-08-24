@@ -208,9 +208,23 @@ def distributed_training(gpu, ngpus_per_node, args, config):
     decorr_cfg = config.get("target_decorrelation")
     proprio_cfg = config.get("proprio_supervision")
     if proprio_cfg and proprio_cfg.get("enabled"):
-        # Same in_channels reasoning as position_cfg above: the head runs on
-        # the student's output features (post-classif, teacher-width).
-        proprio_cfg = dict(proprio_cfg, in_channels=config["point_backbone"]["nb_class"])
+        # in_channels follows WHERE the head attaches.
+        #   depth unset -> the student's final output, i.e. post-classif and
+        #     therefore teacher-width (nb_class). This is what v5 supervised:
+        #     the space projected to match DINOv3's semantics, which is the
+        #     least likely place for terrain compliance to live.
+        #   depth = K   -> the output of backbone layer K, which is
+        #     nb_channels wide (the classif projection has not been applied).
+        # See Distiller.__init__'s proprio_depth block for why attaching early
+        # is the better default on the DRIFT measurements.
+        proprio_cfg = dict(
+            proprio_cfg,
+            in_channels=(
+                config["point_backbone"]["nb_class"]
+                if proprio_cfg.get("depth") is None
+                else config["point_backbone"]["nb_channels"]
+            ),
+        )
     embed_warmup_cfg = config.get("embed_warmup")
     mng = Distiller(
         model_point,
@@ -232,6 +246,7 @@ def distributed_training(gpu, ngpus_per_node, args, config):
         decorr_cfg=decorr_cfg,
         embed_warmup_cfg=embed_warmup_cfg,
         proprio_cfg=proprio_cfg,
+        print_freq=config.get("dataloader", {}).get("print_freq"),
     )
     if args.restart:
         mng.load_state()
