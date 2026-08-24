@@ -266,8 +266,15 @@ def main(args, config):
     args.rank = 0
     # Number of nodes for distributed training'
     args.world_size = 1
-    # URL used to set up distributed training
-    args.dist_url = "tcp://127.0.0.1:4444"
+    # URL used to set up distributed training. The port is derived from the
+    # Slurm job id rather than fixed: two jobs of this script scheduled onto
+    # the SAME node both bound 127.0.0.1:4444 and the second died instantly
+    # with EADDRINUSE (job 11400028, the v6 depth-null control, 14 s in on
+    # h02 alongside 11400027). Job ids are unique per cluster, so the derived
+    # port is collision-free between jobs; outside Slurm nothing changes.
+    _jid = os.environ.get("SLURM_JOB_ID")
+    _port = 4444 if _jid is None else 20000 + int(_jid) % 40000
+    args.dist_url = f"tcp://127.0.0.1:{_port}"
     # Distributed backend'
     args.dist_backend = "nccl"
     # Distributed processing

@@ -101,14 +101,38 @@ class PositionInvarianceHead(torch.nn.Module):
         return self.net(gradient_reversal(feats, lambd))
 
 
-# Best achievable Huber for a CONSTANT predictor on the wheel-contact
-# compression labels: min_c E|y - c| = 0.0521 m, measured exactly on a
-# 1200-frame point-level sample (labels are signed, 13.4% negative, mean 0.057,
-# std 0.090). Huber <= L1 always, so this bounds the constant predictor's Huber
-# from above and any useful head must come in under it. This is the acceptance
-# criterion for the proprio auxiliary; see ProprioHead's docstring for why v5
-# needed one.
-PROPRIO_CONSTANT_BOUND = 0.0521
+# Best achievable loss for a CONSTANT predictor, in the SAME metric this file
+# prints -- F.smooth_l1_loss(beta=huber_delta) -- on the SAME labels the head
+# is actually fed. Measured end to end by calling the real __getitem__ over
+# 2500 merged-dataset frames (4606 labeled points), not reconstructed:
+#
+#   best-constant smooth_l1(beta=0.05) = 0.0769 at c = +0.0814
+#   bootstrap 95% CI                   = [0.0729, 0.0809]
+#
+# The previous value here, 0.0521, was wrong in two compounding ways and made
+# a passing head log "FAIL" for a whole smoke run:
+#   1. WRONG METRIC. 0.0521 was min_c E|y-c|, an L1 figure. smooth_l1 < L1
+#      pointwise, so an L1 bound cannot be compared to a smooth_l1 print.
+#   2. WRONG POPULATION. It came from DRIFT's full label set. The trainer
+#      never sees that set: ImPcDataset.__getitem__ calls map_pc_to_image(),
+#      which RETURNS the cloud cropped to the camera frustum, BEFORE
+#      load_proprio_labels(). Only 12.5% of labeled points survive, and the
+#      survivors are biased -- mean +0.091 / std 0.164 as fed, against
+#      +0.068 / 0.103 on the full cloud, because camera-visible driven cells
+#      are the more compressed ones.
+#
+# So this bound is a property of the CROPPED pipeline, not of the labels. If
+# the camera crop is ever removed (feed the full cloud, carry real
+# pairing_points), the labels change and this MUST be re-measured: on the
+# uncropped cloud the same estimator gives 0.0396.
+#
+# For scale, the pipeline the number describes: 9565 raw pts/frame -> 1887
+# after the camera crop (19.7%) -> 1595 after crop_to_fov and augmentation.
+# max_points=20000 never binds. 12.6% of frames carry any label at all, at
+# 1.84 labeled points/frame, predicting 14.7 labeled pts per batch of 8
+# against 17.7 observed in job 11400027 -- which is how we know this
+# measurement reproduces the trainer.
+PROPRIO_CONSTANT_BOUND = 0.0769
 
 
 class ProprioHead(torch.nn.Module):
@@ -719,6 +743,11 @@ class Distiller:
             running_proprio_sstot = torch.zeros((), device=device)
             running_proprio_n = torch.zeros((), device=device)
             running_proprio_batches = torch.zeros((), device=device)
+            # Snapshot of the five allreduced proprio sums at the PREVIOUS
+            # log point, so each print can report the window since that point
+            # instead of the epoch-to-date mean. See the WINDOWED block below
+            # for why the cumulative form is unusable here.
+            prev_proprio = None
         nonfinite = 0
 
         # Loop over mini-batches
@@ -875,11 +904,33 @@ class Distiller:
                         cursor += 1
                     proprio_r = None
                     if self.proprio_enabled:
-                        # Averaged over labeled batches (summed across ranks by
-                        # the gather), not over all iterations.
-                        n_lab = max(out[cursor + 4].item(), 1.0)
-                        ss_res = out[cursor + 1].item()
-                        ss_tot = out[cursor + 2].item()
+                        # WINDOWED, not epoch-to-date. Every other metric here
+                        # is a cumulative mean (sum / (it+1)), which is fine for
+                        # a slowly-drifting distillation loss but destroys the
+                        # only thing the aux head's curve has to say: whether it
+                        # is still improving or has converged. The v6 smoke
+                        # (job 11400027) printed a cumulative huber falling
+                        # 0.0741 -> 0.0713 over 2000 steps, which reads as slow
+                        # steady progress; differencing the same series shows
+                        # the head actually converged by step ~800 and then sat
+                        # flat at ~0.066 for the remaining 3300 steps. Opposite
+                        # conclusions from one number. So difference the
+                        # allreduced sums against the previous log point and
+                        # report the window.
+                        cur = [out[cursor + j].item() for j in range(5)]
+                        if prev_proprio is None:
+                            win = cur
+                        else:
+                            win = [c - p for c, p in zip(cur, prev_proprio)]
+                        prev_proprio = cur
+                        # An all-ROUGH/RELLIS window has no labeled batch; fall
+                        # back to the epoch-to-date figures rather than divide
+                        # by zero and print noise.
+                        if win[4] < 1.0:
+                            win = cur
+                        n_lab = max(win[4], 1.0)
+                        ss_res = win[1]
+                        ss_tot = win[2]
                         # POOLED r2: sums accumulated across batches and ranks,
                         # divided once here. No clamp, no epsilon, and immune to
                         # the single-valued batches that made the old per-batch
@@ -887,9 +938,9 @@ class Distiller:
                         # label variance has accumulated to make it meaningful.
                         pooled_r2 = (1.0 - ss_res / ss_tot) if ss_tot > 1e-6 else None
                         proprio_r = (
-                            out[cursor].item() / n_lab,       # mean huber
-                            pooled_r2,                        # POOLED r2
-                            out[cursor + 3].item() / n_lab,   # mean pts/labeled batch
+                            win[0] / n_lab,   # mean huber over the window
+                            pooled_r2,        # POOLED r2 over the window
+                            win[3] / n_lab,   # mean pts / labeled batch
                         )
                         cursor += 5
                     # Print score
