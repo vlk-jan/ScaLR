@@ -51,6 +51,16 @@ LIST_DATASETS = {
     "helhest": HelhestSemSeg,
 }
 
+# NOTE on the commented-out entries below: map_pc_to_image now returns
+# (pc_FULL, images, pairing_images, pairing_points) -- four values, with the
+# cloud UNCROPPED -- instead of (pc_cropped, images, pairing_images). Only
+# rellis/rough/helhest were converted, because only those are selectable and
+# only those have data here to verify against. nuscenes, pandaset and
+# semantic_kitti still return the old 3-tuple with a cropped cloud and will
+# raise a ValueError on unpacking in ImPcDataset.__getitem__ if re-enabled.
+# Converting them is mechanical but each crops differently (LidarPointCloud
+# in nuscenes, multi-camera concatenation in pandaset, an x>min_dist
+# pre-filter in semantic_kitti), so it needs doing against real data.
 LIST_DATASETS_DISTILL = {
     # "nuscenes": NuScenesDistill,
     # "semantic_kitti": SemanticKITTIDistill,

@@ -101,5 +101,5 @@ proprio_supervision:
   # because it is also the truncation depth staged in DRIFT
   # (configs/models_geom_k12.yaml) -- pretraining should optimise what the
   # deployed model actually emits. Set to null to reproduce v5's placement.
-  depth: 12
+  depth: null
 

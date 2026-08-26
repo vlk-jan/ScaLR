@@ -149,6 +149,23 @@ class ImPcDataset(PCDataset):
         im = vision_resize(im, self.im_size)
         return im, pairing_images
 
+    @staticmethod
+    def _remap_pairing(pairing_points, keep_idx, n_before):
+        """Re-express pairing_points after the cloud was subset to keep_idx.
+
+        keep_idx: integer indices (LimitNumPoints) or the result of
+        np.flatnonzero on a boolean mask (Crop), selecting which of the
+        n_before points survive, in their new order.
+
+        Returns (new_pairing_points, keep) where keep is a boolean mask over
+        the OLD pairing_points, so pairing_images can be subset the same way.
+        """
+        inv = np.full(n_before, -1, dtype=np.int64)
+        inv[keep_idx] = np.arange(keep_idx.shape[0], dtype=np.int64)
+        new = inv[pairing_points]
+        keep = new >= 0
+        return new[keep], keep
+
     def __getitem__(self, index):
         for _ in range(8):
             try:
@@ -158,8 +175,32 @@ class ImPcDataset(PCDataset):
                 # Voxelization
                 pc, _ = self.downsample(pc, None)
 
-                # Project point cloud to image
-                pc, images, pairing_images = self.map_pc_to_image(pc, index)
+                # Project point cloud to image. map_pc_to_image returns the
+                # FULL cloud plus pairing_points, the indices of the
+                # camera-paired subset. It used to return the cloud CROPPED to
+                # the camera frustum, which had two consequences nobody chose:
+                #
+                #   1. THE BACKBONE ONLY EVER SAW A FORWARD WEDGE. Measured on
+                #      HELHEST: 9565 raw points/frame -> 1887 after the camera
+                #      crop (19.7%) -> 1595 after crop_to_fov. max_points=20000
+                #      never bound, so the frustum, not the cap, set the size of
+                #      every cloud every WaffleIron checkpoint was pretrained
+                #      on -- while DRIFT queries those checkpoints on full 360
+                #      degree clouds.
+                #   2. THE PROPRIO LABELS WERE LOOKED UP ON THE CROPPED CLOUD,
+                #      since that is what this call returned. Driven cells are
+                #      mostly behind and under the robot, so the crop kept 19.7%
+                #      of points but only 12.5% of LABELED points, and biased
+                #      the survivors (mean +0.091 / std 0.164 as fed, against
+                #      +0.068 / 0.103 on the full cloud -- camera-visible driven
+                #      cells are the more compressed ones). The v6 aux head was
+                #      training on an unrepresentative eighth of its labels at
+                #      17.7 labeled points per batch of 8.
+                #
+                # Distillation is unaffected in strength: it runs on
+                # pairing_points, which is the same set of points the crop used
+                # to keep. Only the backbone's input got bigger.
+                pc, images, pairing_images, pairing_points = self.map_pc_to_image(pc, index)
                 images = torch.tensor(np.array(images, dtype=np.float32).transpose(0, 3, 1, 2))
                 assert len(pairing_images) > 0, f"No points project into the image. For {self.list_keyframes[index][0]}"
 
@@ -176,9 +217,13 @@ class ImPcDataset(PCDataset):
                     proprio_label, proprio_mask = proprio
 
                 # Limit number of points and ...
+                n_before = pc.shape[0]
                 pc, _, idx = self.limit_num_points(pc, None, return_idx=True)
-                # ... adapt (points, pixels) pairs
-                pairing_images = pairing_images[idx]
+                # ... adapt (points, pixels) pairs. pairing_points indexes the
+                # cloud, so it has to be re-expressed, and any paired point
+                # that was dropped takes its pixel with it.
+                pairing_points, keep = self._remap_pairing(pairing_points, idx, n_before)
+                pairing_images = pairing_images[keep]
                 proprio_label = proprio_label[idx]
                 proprio_mask = proprio_mask[idx]
 
@@ -187,11 +232,20 @@ class ImPcDataset(PCDataset):
                 images, pairing_images = self.resize_im(images, pairing_images)
 
                 # Crop to fov and ...
+                n_before = pc.shape[0]
                 pc, _, idx = self.crop_to_fov(pc, None, return_mask=True)
-                # ... adapt (points, pixels) pairs
-                pairing_images = pairing_images[idx]
+                # ... adapt (points, pixels) pairs. idx is a boolean mask here,
+                # not indices, hence the flatnonzero.
+                pairing_points, keep = self._remap_pairing(
+                    pairing_points, np.flatnonzero(idx), n_before
+                )
+                pairing_images = pairing_images[keep]
                 proprio_label = proprio_label[idx]
                 proprio_mask = proprio_mask[idx]
+                assert pairing_points.shape[0] > 0, (
+                    f"No paired points survive the fov crop. For "
+                    f"{self.list_keyframes[index][0]}"
+                )
 
                 # Get point features
                 pc = self.prepare_input_features(pc)
@@ -210,7 +264,7 @@ class ImPcDataset(PCDataset):
         out = (
             pc[:, 3:].T[None],
             images,
-            np.arange(pc.shape[0]),
+            pairing_points,
             pairing_images,
             cell_ind[None],
             neighbors.T[None],

@@ -2,15 +2,32 @@
 
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
-#SBATCH --time=60:00:00
+#SBATCH --time=110:00:00
 #SBATCH --error=slurm/out/v6_proprio_err.out
 #SBATCH --output=slurm/out/v6_proprio_std.out
-#SBATCH --partition=h200long
+#SBATCH --partition=h200extralong
 #SBATCH --cpus-per-task=62
 #SBATCH --gres=gpu:4
 #SBATCH --mem=512G
 #SBATCH --mail-user=vlkjan6@fel.cvut.cz
 #SBATCH --mail-type=FAIL
+
+# PARTITION/WALL CLOCK. h200extralong (21 d), not h200long (3 d), and 110 h
+# rather than 60. Removing the camera crop (map_pc_to_image now hands the
+# backbone the FULL cloud instead of the ~1595-point camera frustum) puts
+# ~5600 points per frame through WaffleIron instead of 1595. Measured on
+# paired 40-min depth-null smokes, batch 4/GPU:
+#
+#   pre-fix  1.767 steps/s   (1595 pts/frame)   job 11401672
+#   post-fix 1.046 steps/s   (5589 pts/frame)   job 11406675
+#   -> 1.69x slower for 3.5x the points (sublinear; no OOM at 4/GPU)
+#
+# 25 epochs x 11442 steps (batch 16 global on 4 GPUs) / 1.046 steps/s = 76 h.
+# That overruns both the old 60 h --time and h200long's 72 h ceiling, so the
+# run would have died mid-training with a checkpoint but no result. 110 h
+# leaves margin for the dataloader cost of the bigger clouds and for h200
+# contention. Cutting to 20 epochs (~61 h) would have fit h200long; that was
+# rejected because it trades a scientific variable for queue time.
 
 # Full from-scratch retrain with the proprio-compression auxiliary, v5 retried
 # with its failure fixed. See configs/pretrain/WI_768_h200_v6_proprio.yaml for

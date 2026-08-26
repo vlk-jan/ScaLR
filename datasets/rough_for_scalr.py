@@ -114,6 +114,10 @@ class RoughDistill(ImPcDataset):
         return pc
 
     def map_pc_to_image(self, pc, index, min_dist=0.25):
+        """Returns the FULL cloud plus pairing_points -- integer indices of the
+        camera-paired subset into that cloud -- instead of the cloud CROPPED
+        to the frustum. See ImPcDataset.__getitem__ for why.
+        """
         # Cache image loading and matrix computations
         scene = self.list_keyframes[index][0].split("/")[0]
         img_path = os.path.join(self.rootdir, self.list_keyframes[index][1])
@@ -152,7 +156,9 @@ class RoughDistill(ImPcDataset):
 
             # Apply the mask
             projected_points = pixel_points_2d[mask]
-            pc_base = pc[valid_mask][mask]
+            # Indices of the paired points INTO pc, in the same order as
+            # matching_pixels. The cloud itself is returned uncropped.
+            pairing_points = np.flatnonzero(valid_mask)[mask]
 
             # For points with a matching pixel, coordinates of that pixel (size N x 2)
             # Use flip for change from (x, y) to (row, column)
@@ -165,7 +171,7 @@ class RoughDistill(ImPcDataset):
         # Append data
         matching_pixels = np.c_[np.zeros((matching_pixels.shape[0],), dtype=np.int64), matching_pixels]
 
-        return pc_base, [im], matching_pixels
+        return pc, [im], matching_pixels, pairing_points
 
     def get_cam_mtx(self, scene, cam):
         with open(os.path.join(self.rootdir, scene, f"calibration/cameras/camera_{cam}.yaml"), "r") as fh:

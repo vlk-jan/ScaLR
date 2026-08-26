@@ -104,35 +104,38 @@ class PositionInvarianceHead(torch.nn.Module):
 # Best achievable loss for a CONSTANT predictor, in the SAME metric this file
 # prints -- F.smooth_l1_loss(beta=huber_delta) -- on the SAME labels the head
 # is actually fed. Measured end to end by calling the real __getitem__ over
-# 2500 merged-dataset frames (4606 labeled points), not reconstructed:
+# 2500 merged-dataset frames (2645 labeled points), not reconstructed:
 #
-#   best-constant smooth_l1(beta=0.05) = 0.0769 at c = +0.0814
-#   bootstrap 95% CI                   = [0.0729, 0.0809]
+#   best-constant smooth_l1(beta=0.05) = 0.0578 at c = +0.0592
+#   bootstrap 95% CI                   = [0.0559, 0.0596]
 #
-# The previous value here, 0.0521, was wrong in two compounding ways and made
-# a passing head log "FAIL" for a whole smoke run:
-#   1. WRONG METRIC. 0.0521 was min_c E|y-c|, an L1 figure. smooth_l1 < L1
-#      pointwise, so an L1 bound cannot be compared to a smooth_l1 print.
-#   2. WRONG POPULATION. It came from DRIFT's full label set. The trainer
-#      never sees that set: ImPcDataset.__getitem__ calls map_pc_to_image(),
-#      which RETURNS the cloud cropped to the camera frustum, BEFORE
-#      load_proprio_labels(). Only 12.5% of labeled points survive, and the
-#      survivors are biased -- mean +0.091 / std 0.164 as fed, against
-#      +0.068 / 0.103 on the full cloud, because camera-visible driven cells
-#      are the more compressed ones.
+# THIS NUMBER IS A PROPERTY OF THE DATA PIPELINE, NOT OF THE LABELS. Re-measure
+# it (scripts on the DRIFT side, ~5 min on cpufast) whenever __getitem__
+# changes what reaches the head. Its history is the cautionary tale:
 #
-# So this bound is a property of the CROPPED pipeline, not of the labels. If
-# the camera crop is ever removed (feed the full cloud, carry real
-# pairing_points), the labels change and this MUST be re-measured: on the
-# uncropped cloud the same estimator gives 0.0396.
+#   0.0521  WRONG TWICE OVER. It was min_c E|y-c|, an L1 figure, compared
+#           against a smooth_l1 print -- and smooth_l1 < L1 pointwise. And it
+#           came from DRIFT's full label set, which the trainer never saw. A
+#           passing head logged "FAIL" for an entire smoke run (job 11400027).
+#   0.0769  Correct metric, correct population, but for the CROPPED pipeline:
+#           map_pc_to_image used to return the cloud cropped to the camera
+#           frustum, and load_proprio_labels ran on that. Only 12.5% of
+#           labeled points survived, biased upward (mean +0.091 / std 0.164),
+#           because camera-visible driven cells are the more compressed ones.
+#   0.0578  Current. The crop is gone; labels are now the full driven area
+#           (mean +0.079 / std 0.133). A LOWER bound means a HARDER task --
+#           a wide biased target is easy to beat with a constant.
 #
-# For scale, the pipeline the number describes: 9565 raw pts/frame -> 1887
-# after the camera crop (19.7%) -> 1595 after crop_to_fov and augmentation.
-# max_points=20000 never binds. 12.6% of frames carry any label at all, at
-# 1.84 labeled points/frame, predicting 14.7 labeled pts per batch of 8
-# against 17.7 observed in job 11400027 -- which is how we know this
-# measurement reproduces the trainer.
-PROPRIO_CONSTANT_BOUND = 0.0769
+# The fix is worth its cost on this metric: measured on paired depth-null
+# smokes differing only in the crop, the head's huber as a fraction of its own
+# bound went 0.934 -> 0.812 (change -0.122, 95% CI [-0.173, -0.071]), i.e.
+# from using 6.6% of the headroom below a constant to 18.8%.
+#
+# Pipeline the number describes: 9565 raw pts/frame, voxelized to ~5600, all
+# of which now reach the backbone (it was 1595, the camera frustum). 23.0% of
+# frames carry a label, at 4.60 labeled pts/frame -> ~37 per batch of 8,
+# against 27 observed in job 11406675.
+PROPRIO_CONSTANT_BOUND = 0.0578
 
 
 class ProprioHead(torch.nn.Module):
