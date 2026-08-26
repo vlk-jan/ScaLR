@@ -49,5 +49,11 @@
 # Do not judge it on features-alone or on a flat depth curve -- those are the
 # criteria that accepted v5, and both were 66-window artifacts.
 
+# Fragmentation guard. Both v6 smokes ran with this set, so 4 GPUs x 4
+# samples/GPU at ~5600 points/frame is only validated WITH it; job 11399896
+# died on a 96 MiB allocation holding 1.87 GiB reserved-but-unallocated. Over
+# 110 h the risk is not the first step but hour 40, so it matches the smoke.
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+
 source .h200_env
 python distill.py --config configs/pretrain/WI_768_h200_v6_proprio.yaml --log_path logs/pretraining/full_v6_proprio --dataset robotics --path_dataset /mnt/personal/vlkjan6/setprop --multiprocessing-distributed --bf16
