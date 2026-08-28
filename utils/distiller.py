@@ -122,9 +122,26 @@ class PositionInvarianceHead(torch.nn.Module):
 #           frustum, and load_proprio_labels ran on that. Only 12.5% of
 #           labeled points survived, biased upward (mean +0.091 / std 0.164),
 #           because camera-visible driven cells are the more compressed ones.
-#   0.0578  Current. The crop is gone; labels are now the full driven area
-#           (mean +0.079 / std 0.133). A LOWER bound means a HARDER task --
-#           a wide biased target is easy to beat with a constant.
+#   0.0578  Current, and correct FOR THE MIRRORED LABELS. The crop is gone;
+#           labels are the full driven area (mean +0.079 / std 0.133). A LOWER
+#           bound means a HARDER task -- a wide biased target is easy to beat
+#           with a constant. Re-measured 2026-08-28 on 2.6x the data:
+#           0.0598, 95% CI [0.0485, 0.0735]. Consistent; leave the constant.
+#   0.0369  THE BOUND FOR FRAME-FIXED LABELS, 95% CI [0.0296, 0.0452], and NOT
+#           yet in use. DRIFT commit 237f72d: the labels every run through v6
+#           trained on were built from the upside-down lidar's relative pose,
+#           so contacts landed on terrain the wheels never touched (valid-cell
+#           IoU 0.36 vs corrected). Correcting it drops the label mean 0.087 ->
+#           0.049 and the std 0.142 -> 0.105, because a correctly registered
+#           wheel is differenced against the ground it actually sat on -- much
+#           of the old spread was registration error, not compliance.
+#
+#           SWITCH THIS CONSTANT WHEN YOU SWITCH THE LABEL ROOT, in the same
+#           commit. A run on setprop_framefix/ scored against 0.0578 gets a
+#           free PASS it did not earn; a run on the shipped labels scored
+#           against 0.0369 gets a FAIL it did not deserve. The two numbers are
+#           not comparable across label sets in either direction -- v6's own
+#           huber is measured on mirrored labels and belongs against 0.0578.
 #
 # The fix is worth its cost on this metric: measured on paired depth-null
 # smokes differing only in the crop, the head's huber as a fraction of its own

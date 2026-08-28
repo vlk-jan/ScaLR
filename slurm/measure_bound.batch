@@ -1,0 +1,18 @@
+#!/bin/bash
+#SBATCH --nodes=1
+#SBATCH --ntasks-per-node=1
+#SBATCH --time=2:00:00
+#SBATCH --error=slurm/out/measure_bound_%j.err
+#SBATCH --output=slurm/out/measure_bound_%j.out
+#SBATCH --partition=cpufast
+#SBATCH --cpus-per-task=8
+#SBATCH --mem=48G
+source .h200_env
+cd "$SLURM_SUBMIT_DIR" || exit 1
+
+# Paired best-constant bound: shipped (mirrored) labels vs frame-fixed, on the
+# SAME frames, measured through the real __getitem__. The current acceptance
+# bound 0.0578 was measured against the mirrored labels; a corrected run needs
+# a corrected bound, and a fit improving against a bound derived from the same
+# corrupted labels is not evidence of anything.
+python3 -u scripts/measure_proprio_bound.py --frames 2500
