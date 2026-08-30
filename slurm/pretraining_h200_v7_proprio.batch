@@ -1,0 +1,85 @@
+#!/bin/bash
+
+#SBATCH --nodes=1
+#SBATCH --ntasks-per-node=1
+#SBATCH --time=110:00:00
+#SBATCH --error=slurm/out/v7_proprio_err.out
+#SBATCH --output=slurm/out/v7_proprio_std.out
+#SBATCH --partition=h200extralong
+#SBATCH --cpus-per-task=62
+#SBATCH --gres=gpu:4
+#SBATCH --mem=512G
+#SBATCH --mail-user=vlkjan6@fel.cvut.cz
+#SBATCH --mail-type=FAIL
+
+# PARTITION/WALL CLOCK. h200extralong (21 d), not h200long (3 d), and 110 h
+# rather than 60. Removing the camera crop (map_pc_to_image now hands the
+# backbone the FULL cloud instead of the ~1595-point camera frustum) puts
+# ~5600 points per frame through WaffleIron instead of 1595. Measured on
+# paired 40-min depth-null smokes, batch 4/GPU:
+#
+#   pre-fix  1.767 steps/s   (1595 pts/frame)   job 11401672
+#   post-fix 1.046 steps/s   (5589 pts/frame)   job 11406675
+#   -> 1.69x slower for 3.5x the points (sublinear; no OOM at 4/GPU)
+#
+# 25 epochs x 11442 steps (batch 16 global on 4 GPUs) / 1.046 steps/s = 76 h.
+# That overruns both the old 60 h --time and h200long's 72 h ceiling, so the
+# run would have died mid-training with a checkpoint but no result. 110 h
+# leaves margin for the dataloader cost of the bigger clouds and for h200
+# contention. Cutting to 20 epochs (~61 h) would have fit h200long; that was
+# rejected because it trades a scientific variable for queue time.
+
+# Full from-scratch retrain with the proprio-compression auxiliary, v5 retried
+# with its failure fixed. See configs/pretrain/WI_768_h200_v7_proprio.yaml for
+# the full rationale.
+#
+# DO NOT SUBMIT THIS UNTIL slurm/pretraining_v6_proprio_smoke.batch PRINTS PASS.
+# That job answers, in 40 minutes on 2 GPUs, the question v5 spent 48 hours
+# failing to answer: does the aux head learn at all? v5 finished at
+# proprio_huber 0.0707 against a best-constant bound of 0.0521 while feeding
+# weight-10 gradients into the backbone, and its own diagnostic could not show
+# it because proprio_r2 was a per-batch ratio with a clamped denominator.
+#
+# From scratch by design, as v5 was: the aux should shape the features from
+# epoch 0 rather than be retrofitted. No --warm_start_ckpt.
+#
+# Judge the result on DRIFT's probe_compression.py at its current defaults
+# (576 windows, all folds), PAIRED delta column against `current`, plus the
+# within-window delta under fixed effects, then a 50-epoch end-to-end A/B.
+# Do not judge it on features-alone or on a flat depth curve -- those are the
+# criteria that accepted v5, and both were 66-window artifacts.
+
+# Fragmentation guard. Both v6 smokes ran with this set, so 4 GPUs x 4
+# samples/GPU at ~5600 points/frame is only validated WITH it; job 11399896
+# died on a 96 MiB allocation holding 1.87 GiB reserved-but-unallocated. Over
+# 110 h the risk is not the first step but hour 40, so it matches the smoke.
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+
+
+# ============================================================================
+# v7 = v6 with FRAME-CORRECTED proprio labels. Single variable.
+#
+# v6's aux labels came from the mirrored odometry (DRIFT 5400a5a): valid-cell
+# IoU 0.36 against the corrected set, 0.48 even on near-straight windows, ~64%
+# of labelled cells present in only one version. Its downstream A/B against
+# decorr tied (near-view skill +0.085 vs +0.094, corr_within +0.905 vs +0.895),
+# which the pre-registration written BEFORE that readout classifies as
+# inconclusive-pending-this-run, not as evidence against full clouds.
+#
+# --path_dataset points at setprop_v7, a tree of SYMLINKS composed by
+# DRIFT/scripts/data/compose_framefix_labelset.py: every entry from the original
+# except proprio_labels, which points at setprop_framefix. Verified before use:
+#   * 106,059 label files, exactly matching the original count
+#   * 0 scenes lost their labels (32 labelled, 11 never labelled)
+#   * clouds/images/height_maps all reachable through the links (6,896 clouds
+#     visible in scene 0018 alone)
+#   * 5/5 sampled labels DIFFER from the mirrored originals -- the check that
+#     proves the corrected set is what is actually being read
+# Both source trees stay read-only; the composed tree is 1.7 MB.
+#
+# Everything else is byte-identical to v6: same config values, 25 epochs, aux
+# weight 2.0, depth 12, bf16. So a v7-vs-v6 delta is the labels and nothing
+# else. The epoch-count confound against decorr is UNCHANGED and still applies.
+# ============================================================================
+source .h200_env
+python distill.py --config configs/pretrain/WI_768_h200_v7_proprio.yaml --log_path logs/pretraining/full_v7_proprio --dataset robotics --path_dataset /mnt/personal/vlkjan6/setprop_v7 --multiprocessing-distributed --bf16
