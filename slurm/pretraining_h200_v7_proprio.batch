@@ -82,4 +82,44 @@ export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 # else. The epoch-count confound against decorr is UNCHANGED and still applies.
 # ============================================================================
 source .h200_env
+# PRE-REGISTERED READING, written before v7 ran.
+#
+# Hypothesis this run tests: v6's aux gradient carried mostly REGISTRATION
+# NOISE. Its labels came from mirrored odometry -- valid-cell IoU 0.36 against
+# the corrected set, ~64% of labelled cells present in only one version -- so
+# the terrain-specific component was destroyed while the spatial prior of
+# where wheels go survived. v6's downstream A/B tied with decorr (near-view
+# skill +0.085 vs +0.094, on-path corr_within +0.905 vs +0.895, trajectory
+# identical), which is what "the objective never got a fair test" looks like.
+#
+# Expected if the hypothesis is right:
+#
+#   1. The aux fit improves AS A FRACTION OF ITS OWN BOUND. v6 finished at
+#      0.0141/0.0578 = 0.244. Raw huber is NOT comparable across the two runs:
+#      the bound moved with the labels (0.0578 -> 0.0369), so v7 landing at a
+#      HIGHER raw huber than v6 can still be a better fit. Compare fractions.
+#
+#   2. cos_image is essentially unchanged. This is the control. div_q is
+#      feature_diversity() on the FROZEN teacher features, so it depends on
+#      the teacher and the sampled points and on nothing the student or the
+#      labels do -- it sat at 0.314 for all 25 epochs of v6. A material move
+#      here means something other than the labels changed, and the
+#      single-variable claim needs re-examining before anything else is read.
+#
+#   3. cos_point MAY move, and that is EXPECTED rather than a violation.
+#      div_k is feature_diversity() on the student point features -- the same
+#      tensor a depth: null aux head consumes -- so the aux gradient lands
+#      exactly where this metric is measured, and changing the labels changes
+#      that gradient. Do NOT read a cos_point difference as evidence that more
+#      than the labels changed; cos_image is the metric that answers that.
+#      (And cos_point still cannot separate network-wide diversification from
+#      last-layer reorganisation. DRIFT's K=6/12/24/36 profile does that.)
+#
+#   4. The distillation term reported as `loss`, not `total`, should be
+#      broadly comparable. It is the term to compare across settings.
+#
+# Falsification: if the aux fit does not improve in fraction-of-own-bound
+# terms, correct labels did not help the objective, and the aux hypothesis is
+# weakened regardless of what the downstream A/B says.
+
 python distill.py --config configs/pretrain/WI_768_h200_v7_proprio.yaml --log_path logs/pretraining/full_v7_proprio --dataset robotics --path_dataset /mnt/personal/vlkjan6/setprop_v7 --multiprocessing-distributed --bf16
