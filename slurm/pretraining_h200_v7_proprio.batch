@@ -82,6 +82,38 @@ export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 # else. The epoch-count confound against decorr is UNCHANGED and still applies.
 # ============================================================================
 source .h200_env
+# ============================================================================
+# ON HOLD -- DO NOT SUBMIT. User decision, 2026-08-31.
+#
+# v7 waits for the new HELHEST rig data (Odin1 + Fixposition). The reason is
+# not scheduling: a backbone pretrained on the OLD rig does not carry over to
+# the robot this method has to run on, and the label pipeline v7 exists to
+# correct is rig-specific in every constant it uses.
+#
+#   - _mount_extrinsic() is diag(1,-1,-1) with z = 0.145 and x = +-0.17. That
+#     is the LIVOX mount. Odin1 sits somewhere else, and the 2026-08-21 bags
+#     did not even publish base_link <-> odin1_base_link, so the number does
+#     not exist yet. Run the generator on Odin1 clouds today and it silently
+#     produces garbage in the exact shape it produced mirrored labels.
+#   - The -0.34 m cloud offset is an artifact of the OLD extractor composing
+#     the static TF chain backwards. The new extraction path is a different
+#     code path in dataset_tools; the constant does not transfer.
+#   - Odometry moves Point-LIO -> Fixposition GNSS/INS, which is what made the
+#     mirrored-pose bug possible in the first place.
+#   - Clouds go ~9.5k raw points (Livox) -> ~33k organized (Odin1, 256x192),
+#     and the camera goes to 1600x1296. max_points, throughput and the
+#     pairing fraction all change.
+#
+# So v7-on-old-data would answer a method question whose answer needs
+# re-validating on the new rig anyway, at ~3 days of h200. Next collection is
+# the week of 2026-08-31 with the robot-side blockers being fixed for it.
+#
+# When the new bags land: run the smoke-bag field checks FIRST (see the
+# HELHEST Collection Spec artifact and dataset_tools), derive the Odin1 mount
+# extrinsic, regenerate labels for the new rig, RE-MEASURE constant_bound for
+# those labels, then re-scope this run. Do not reuse the numbers below.
+# ============================================================================
+
 # PRE-REGISTERED READING, written before v7 ran.
 #
 # Hypothesis this run tests: v6's aux gradient carried mostly REGISTRATION
@@ -99,7 +131,12 @@ source .h200_env
 #      the bound moved with the labels (0.0578 -> 0.0369), so v7 landing at a
 #      HIGHER raw huber than v6 can still be a better fit. Compare fractions.
 #
-#   2. cos_image is essentially unchanged. This is the control. div_q is
+#   2. cos_image stays within 0.310-0.318. This is the control. Measured over
+#      all 275 logged lines of v6 it spans min 0.313 / max 0.315, range 0.0020,
+#      sd 0.00022, three distinct values -- two orders of magnitude tighter
+#      than cos_point, which moved 0.278 (0.682 -> 0.404) over the same run.
+#      Outside that band is the stop-and-re-examine signal; inside it is
+#      sampling RNG. div_q is
 #      feature_diversity() on the FROZEN teacher features, so it depends on
 #      the teacher and the sampled points and on nothing the student or the
 #      labels do -- it sat at 0.314 for all 25 epochs of v6. A material move
