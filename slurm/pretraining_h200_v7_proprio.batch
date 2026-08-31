@@ -59,7 +59,10 @@ export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 # ============================================================================
 # v7 = v6 with FRAME-CORRECTED proprio labels. Single variable.
 #
-# v6's aux labels came from the mirrored odometry (DRIFT 5400a5a): valid-cell
+# v6's aux labels came from the mirrored odometry (DRIFT "Correct the odometry
+# frame: odometry.txt is the upside-down lidar's pose, not base_link's" --
+# by subject, since DRIFT hashes were invalidated by a history rewrite):
+# valid-cell
 # IoU 0.36 against the corrected set, 0.48 even on near-straight windows, ~64%
 # of labelled cells present in only one version. Its downstream A/B against
 # decorr tied (near-view skill +0.085 vs +0.094, corr_within +0.905 vs +0.895),
