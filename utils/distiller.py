@@ -130,8 +130,13 @@ class PositionInvarianceHead(torch.nn.Module):
 #   0.0369  THE BOUND FOR FRAME-FIXED LABELS, 95% CI [0.0296, 0.0452], and NOT
 #           yet in use. See DRIFT "Regenerate the pretraining proprio
 #           labels: v6's aux supervision is mirrored too" -- cited by
-#           SUBJECT, not hash: DRIFT's history was rewritten 2026-08-31 and
-#           every pre-rewrite hash is dead. The labels every run through v6
+#           SUBJECT: DRIFT's history was rewritten 2026-08-28 and the
+#           pre-rewrite hashes died. They resolve again via the tag
+#           pre-trailer-strip-2026-08-28, and docs/history/
+#           PRE_TRAILER_STRIP_MESSAGES.md carries the mapping and the full
+#           original messages. Subjects mostly survived but not perfectly --
+#           the rewrite transliterated some non-ASCII -- so neither key is
+#           fully stable. The labels every run through v6
 #           trained on were built from the upside-down lidar's relative pose,
 #           so contacts landed on terrain the wheels never touched (valid-cell
 #           IoU 0.36 vs corrected). Correcting it drops the label mean 0.087 ->
