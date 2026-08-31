@@ -92,14 +92,25 @@ proprio_supervision:
   hidden_dim: 128
   lr: 0.001
   huber_delta: 0.05
-  # Attach the auxiliary to backbone layer 12, NOT the final classif output.
-  # v5 supervised the post-classif features (1280-wide, projected to match the
-  # DINOv3 teacher). DRIFT's measurements say that is the wrong place: layers
-  # 7-36 aggregate over ~+-60 m, K=36 retains only ~0.73 of K=6's
-  # compression-relevant direction, and on the local component a K=6 backbone
-  # adds +0.101 over heightmap stats where K=36 adds +0.039. 12 rather than 6
-  # because it is also the truncation depth staged in DRIFT
-  # (configs/models_geom_k12.yaml) -- pretraining should optimise what the
-  # deployed model actually emits. Set to null to reproduce v5's placement.
+  # null = attach at the final classif output (1280-wide), which is what v6
+  # actually ran with.
+  #
+  # A layer-12 attachment was the original plan, on DRIFT's measurements that
+  # deep features are the wrong place: layers 7-36 aggregate over ~+-60 m,
+  # K=36 retains only ~0.73 of K=6's compression-relevant direction, and on
+  # the local component a K=6 backbone adds +0.101 over heightmap stats where
+  # K=36 adds +0.039. 12 rather than 6 because it is also the truncation depth
+  # staged in DRIFT (configs/models_geom_k12.yaml).
+  #
+  # That plan did not survive its own test. A paired smoke, depth 12 against
+  # depth null, differing in nothing else, put the difference at -0.00001 in
+  # huber-as-fraction-of-bound +- 0.00069, with r = 0.902 between the arms and
+  # a minimum detectable effect of 1.9%. No measurable benefit, so the simpler
+  # placement won. Set depth: 12 to re-test it on a longer run.
+  #
+  # Reading the resulting cos_point needs care: it is feature_diversity() on
+  # the final layer, which is exactly what a null attachment reshapes. It
+  # cannot distinguish network-wide diversification from last-layer
+  # reorganisation -- read DRIFT's K=6/12/24/36 identity profile instead.
   depth: null
 
