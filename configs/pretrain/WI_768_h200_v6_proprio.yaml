@@ -92,6 +92,14 @@ proprio_supervision:
   hidden_dim: 128
   lr: 0.001
   huber_delta: 0.05
+  # Best-constant bound for THE LABELS THIS RUN READS (setprop/, mirrored
+  # odometry). Readout only: it sets the PASS/FAIL print and the tensorboard
+  # margin, never a gradient. Measured through the real __getitem__ by
+  # scripts/measure_proprio_bound.py -- 0.0598, 95% CI [0.0485, 0.0735] on
+  # 2500 frames, consistent with the 0.0578 kept here from the earlier
+  # measurement. The corrected labels have a DIFFERENT bound (0.0369); a run
+  # that switches --path_dataset must switch this in the same commit.
+  constant_bound: 0.0578
   # null = attach at the final classif output (1280-wide), which is what v6
   # actually ran with.
   #

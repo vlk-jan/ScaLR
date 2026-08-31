@@ -327,6 +327,16 @@ class Distiller:
             # HR_PROPRIO_HUBER_DELTA -- the label std at driven cells is
             # ~0.09 m, so errors beyond ~half a std go linear.
             self.proprio_huber_delta = float(proprio_cfg.get("huber_delta", 0.05))
+            # The acceptance bound belongs to the LABEL SET, not to the code.
+            # v6 read mirrored labels (bound 0.0578); a run on the corrected
+            # labels needs 0.0369, and scoring it against 0.0578 hands it a
+            # PASS it did not earn. Keeping the number in the config puts it
+            # beside the --path_dataset that selects the labels, instead of in
+            # a module constant two files away that a new run silently
+            # inherits. Readout only -- no gradient depends on it.
+            self.proprio_bound = float(
+                proprio_cfg.get("constant_bound", PROPRIO_CONSTANT_BOUND)
+            )
             device = torch.device("cuda", self.rank) if self.rank is not None else torch.device("cuda")
             head = ProprioHead(
                 in_channels=proprio_cfg["in_channels"],
@@ -453,19 +463,23 @@ class Distiller:
                 )
                 log += f" | proprio_pts/batch = {pts:.1f}"
                 # HARD ACCEPTANCE CRITERION, pre-registered.
-                # PROPRIO_CONSTANT_BOUND is the best a CONSTANT predictor can
-                # do on the real label distribution: min_c E|y - c| = 0.0521,
-                # measured exactly on a 1200-frame point-level sample, and
-                # Huber <= L1 always, so any head worth its gradients must beat
-                # it. v5 trained 25 epochs and finished at 0.0707 -- ~35% WORSE
-                # than emitting a constant -- while feeding weight-10 gradients
-                # into the backbone, and nothing in its logs said so.
+                # The bound is the best a CONSTANT predictor can do on the
+                # label distribution this run is actually reading:
+                # min_c E[smooth_l1(y - c)], measured through the real
+                # __getitem__ by scripts/measure_proprio_bound.py. Any head
+                # worth its gradients must beat it. v5 trained 25 epochs and
+                # finished ~35% WORSE than emitting a constant while feeding
+                # weight-10 gradients into the backbone, and nothing in its
+                # logs said so.
+                # It is a property of the LABELS: 0.0578 for the mirrored set
+                # v6 read, 0.0369 for the frame-corrected set. Set it in the
+                # config next to the label root; see self.proprio_bound.
                 # Do NOT substitute the predict-zero version of this bound:
                 # E|y| = 0.0703, which v5 clears by 0.0004 and which is
                 # therefore true and worthless.
-                verdict = "PASS" if huber < PROPRIO_CONSTANT_BOUND else "FAIL"
+                verdict = "PASS" if huber < self.proprio_bound else "FAIL"
                 log += (
-                    f" | vs best-constant {PROPRIO_CONSTANT_BOUND:.4f}"
+                    f" | vs best-constant {self.proprio_bound:.4f}"
                     f" -> {verdict}"
                 )
             print(log)
@@ -1017,7 +1031,7 @@ class Distiller:
                             # means the head is beating a constant predictor.
                             writer.add_scalar(
                                 header + "/proprio_huber_margin",
-                                PROPRIO_CONSTANT_BOUND - proprio_r[0],
+                                self.proprio_bound - proprio_r[0],
                                 step,
                             )
 
