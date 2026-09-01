@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import warnings
 import torch
 import numpy as np
 import utils.transforms as tr
@@ -97,6 +98,7 @@ class ImPcDataset(PCDataset):
         assert self.phase == "train"
 
         self.im_size = im_size
+        self._aspect_checked = False
 
         self.limit_num_points = tr.LimitNumPoints(
             dims=(0, 1, 2),
@@ -140,7 +142,46 @@ class ImPcDataset(PCDataset):
     def __len__(self):
         raise NotImplementedError()
 
+    def _check_aspect(self, src_h, src_w):
+        """Warn once if im_size squashes this camera anisotropically.
+
+        The resize below scales height and width by DIFFERENT factors whenever
+        im_size's aspect differs from the camera's, so the teacher sees a
+        stretched world and every patch covers a non-square piece of it. That
+        is not automatically a bug -- upstream ScaLR runs one im_size across
+        nuScenes, SemanticKITTI and Pandaset, whose cameras disagree far more
+        than this -- so it warns rather than raising, and reproducing an old
+        run keeps working. But it is worth knowing before a 3-day pretraining:
+        HELHEST v1's 1280x800 camera is stretched 1.25x by [224, 448], and the
+        Odin1's 1600x1296 is stretched 1.62x by the same setting.
+        """
+        if self._aspect_checked:
+            return
+        self._aspect_checked = True
+        h, w = self.im_size
+        stretch = (w / src_w) / (h / src_h)
+        if abs(stretch - 1.0) < 0.05:
+            return
+        # Nearest patch-aligned im_size preserving this camera's aspect, at
+        # roughly the configured token budget.
+        budget = (h // 16) * (w // 16)
+        best = min(
+            ((bh, bw) for bh in range(160, 449, 16) for bw in range(160, 641, 16)
+             if abs((bh // 16) * (bw // 16) - budget) <= budget * 0.25),
+            key=lambda s: abs((s[1] / s[0]) - (src_w / src_h)),
+            default=None,
+        )
+        warnings.warn(
+            f"im_size {list(self.im_size)} (aspect {w / h:.3f}) against a "
+            f"{src_w}x{src_h} camera (aspect {src_w / src_h:.3f}) stretches the "
+            f"image {stretch:.2f}x horizontally before the teacher sees it."
+            + (f" Aspect-preserving alternative at a similar token budget: "
+               f"{list(best)}." if best else ""),
+            stacklevel=2,
+        )
+
     def resize_im(self, im, pairing_images):
+        self._check_aspect(im.shape[-2], im.shape[-1])
         # Rescale pixel coordinates
         rescale = [1.0, self.im_size[0] / im.shape[-2], self.im_size[1] / im.shape[-1]]
         pairing_images = np.floor(np.multiply(pairing_images, rescale))

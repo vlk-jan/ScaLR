@@ -62,7 +62,22 @@ point_backbone:
 image_backbone:
   images_encoder: "dinov3_vit_huge_p16"
   feat: "x"
-  im_size: [224, 448]
+  # PAIRED WITH THE CAMERA OF --path_dataset, exactly like constant_bound is
+  # paired with its labels. resize_im scales height and width by different
+  # factors whenever this aspect differs from the camera's, so a wrong value
+  # here hands the teacher a stretched world and nothing else complains.
+  #
+  #   Odin1        1600x1296 (aspect 1.235) -> [272, 336]  aspect 1.235
+  #   HELHEST v1   1280x800  (aspect 1.600) -> [240, 384]  aspect 1.600
+  #
+  # [224, 448] is upstream's value (aspect 2.0), inherited from nuScenes and
+  # SemanticKITTI. It stretched HELHEST v1 by 1.25x and would stretch the
+  # Odin1 by 1.62x -- worse, because this camera is nearly square.
+  # 17x21 = 357 patches, against 14x28 = 392 before, so this is also slightly
+  # cheaper. Both dimensions must stay divisible by the patch size (16);
+  # ImageTeacher asserts it. ImPcDataset._check_aspect warns at runtime if
+  # this and the actual camera disagree.
+  im_size: [272, 336]
 
 dataloader:
   batch_size: 16
