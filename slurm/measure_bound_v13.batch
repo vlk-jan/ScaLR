@@ -11,11 +11,15 @@ source .h200_env
 cd "$SLURM_SUBMIT_DIR" || exit 1
 # Best-constant bound for the labels a run on the single root actually reads:
 # setprop/HELHEST -> HELHEST_v1_3, whose proprio_labels were generated on v1.3
-# odometry + clip-1.0 height maps (DRIFT job 11483468). The alt arm reads the
-# 2026-08-28 framefix set on the SAME v1_3 clouds, for a paired comparison.
+# odometry + clip-1.0 height maps with the URDF wheel geometry and
+# --min_validity 2 (DRIFT d71f48a, job 11484024): only MEASURED map cells carry
+# a label, and a keyframe with no measured driven cell gets no file, so the
+# count is well below the 182,878 keyframes. The alt arm reads the 2026-08-28
+# framefix set (old wheels, ungated) on the SAME clouds, for a paired reference.
 # Any config reading these labels must carry the v1_3 bound as constant_bound.
 n=$(find /mnt/personal/vlkjan6/HELHEST_v1_3 -maxdepth 3 -path '*/proprio_labels/*.npz' | wc -l)
-echo "v1_3 label files: $n"; [ "$n" -gt 100000 ] || { echo "FATAL: labels incomplete"; exit 1; }
+echo "v1_3 label files: $n"; [ "$n" -gt 50000 ] || { echo "FATAL: labels incomplete"; exit 1; }
+grep -q '"min_validity": 2' /mnt/personal/vlkjan6/HELHEST_v1_3/manifest.json || { echo "FATAL: manifest not at min_validity 2"; exit 1; }
 python3 -u scripts/measure_proprio_bound.py --frames 2500 \
   --path_dataset /mnt/personal/vlkjan6/setprop --shipped_tag /setprop --alt_tag /setprop_framefix \
-  --shipped_name "V1_3 LABELS (base_link odometry, clip 1.0)" --alt_name "FRAMEFIX 2026-08-28 (same clouds)"
+  --shipped_name "V1_3 LABELS (URDF wheels, measured cells)" --alt_name "FRAMEFIX 2026-08-28 (old wheels, ungated)"

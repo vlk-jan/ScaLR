@@ -8,7 +8,8 @@
 #SBATCH --cpus-per-task=12
 #SBATCH --mem=48G
 # Same as consolidation_check.batch but against v1_3 through the setprop
-# symlink, with v1_3's OWN proprio_labels (DRIFT job 11483468) as the label
+# symlink, with v1_3's OWN proprio_labels (URDF wheels, min_validity 2; DRIFT
+# d71f48a, job 11484024) as the label
 # root, so load_proprio_labels is exercised on the labels a run will read.
 source .h200_env
 python scripts/check_root_parity.py --n_per_scene 8 --seed 2 --torch \
