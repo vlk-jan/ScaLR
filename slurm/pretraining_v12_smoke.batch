@@ -1,0 +1,24 @@
+#!/bin/bash
+#SBATCH --nodes=1
+#SBATCH --ntasks-per-node=1
+#SBATCH --time=00:50:00
+#SBATCH --error=slurm/out/v12_smoke_err.out
+#SBATCH --output=slurm/out/v12_smoke_std.out
+#SBATCH --partition=h200fast
+#SBATCH --cpus-per-task=12
+#SBATCH --gres=gpu:1
+#SBATCH --mem=128G
+
+# h200fast, not an A100 partition: batch 4 at 20k points OOMs a 40 GB A100
+# (job 11481583); the v6 smokes this mirrors ran 4/GPU on 141 GB H200s.
+# Mechanics smoke for the single-root (HELHEST_v1_2) migration. See
+# configs/pretrain/WI_768_v12_smoke.yaml. The merged root is a directory of
+# three symlinks (HELHEST -> HELHEST_v1_2, ROUGH and RELLIS-3D -> setprop's),
+# because RoboticsMergedDistill joins those three names onto --path_dataset.
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+source .h200_env
+echo "host $(hostname) python $(which python)"; nvidia-smi -L
+python distill.py --config configs/pretrain/WI_768_v12_smoke.yaml \
+  --log_path logs/pretraining/v12_smoke \
+  --dataset robotics --path_dataset /mnt/personal/vlkjan6/scratch_consolidation/root_v12 \
+  --gpu 0 --bf16 --warm_start_ckpt logs/pretraining/full_v4/ckpt_last.pth
