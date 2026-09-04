@@ -1,0 +1,18 @@
+#!/bin/bash
+#SBATCH --nodes=1
+#SBATCH --ntasks-per-node=1
+#SBATCH --time=01:00:00
+#SBATCH --error=slurm/out/consolidation_check_v13_err.out
+#SBATCH --output=slurm/out/consolidation_check_v13_std.out
+#SBATCH --partition=cpu
+#SBATCH --cpus-per-task=12
+#SBATCH --mem=48G
+# Same as consolidation_check.batch but against v1_3 through the setprop
+# symlink, with v1_3's OWN proprio_labels (DRIFT job 11483468) as the label
+# root, so load_proprio_labels is exercised on the labels a run will read.
+source .h200_env
+python scripts/check_root_parity.py --n_per_scene 8 --seed 2 --torch \
+  --new /mnt/personal/vlkjan6/setprop/HELHEST \
+  --batch 8 --workers 8 --batches 20 \
+  --label_root /mnt/personal/vlkjan6/HELHEST_v1_3 \
+  --compose_dir /mnt/personal/vlkjan6/scratch_consolidation/helhest_v13_labels

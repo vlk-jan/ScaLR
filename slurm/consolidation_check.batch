@@ -1,0 +1,18 @@
+#!/bin/bash
+#SBATCH --nodes=1
+#SBATCH --ntasks-per-node=1
+#SBATCH --time=01:30:00
+#SBATCH --error=slurm/out/consolidation_check_err.out
+#SBATCH --output=slurm/out/consolidation_check_std.out
+#SBATCH --partition=cpu
+#SBATCH --cpus-per-task=12
+#SBATCH --mem=48G
+
+# scripts/check_root_parity.py Part 1 + Part 2 (needs torch/torchvision, so
+# the ScaLR env): setprop vs HELHEST_v1_2 through the real loader.
+source .h200_env
+echo "host $(hostname) python $(which python)"
+python scripts/check_root_parity.py --n_per_scene 8 --seed 1 --torch \
+  --batch 8 --workers 8 --batches 30 \
+  --label_root /mnt/personal/vlkjan6/setprop_framefix/HELHEST \
+  --compose_dir /mnt/personal/vlkjan6/scratch_consolidation/helhest_v12_labels
