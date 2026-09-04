@@ -485,7 +485,13 @@ class Distiller:
                 # Do NOT substitute the predict-zero version of this bound:
                 # E|y| = 0.0703, which v5 clears by 0.0004 and which is
                 # therefore true and worthless.
-                verdict = "PASS" if huber < self.proprio_bound else "FAIL"
+                # A root with no proprio_labels/ (HELHEST_v1_2 as shipped)
+                # reaches here with huber 0.0 from the dummy-zero path and
+                # would print PASS having fitted nothing.
+                if pts == 0:
+                    verdict = "NO LABELS SEEN"
+                else:
+                    verdict = "PASS" if huber < self.proprio_bound else "FAIL"
                 log += (
                     f" | vs best-constant {self.proprio_bound:.4f}"
                     f" -> {verdict}"

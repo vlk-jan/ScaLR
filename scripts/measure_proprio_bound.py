@@ -46,6 +46,8 @@ ap.add_argument("--config", default="configs/pretrain/WI_768_h200_v6_proprio.yam
 ap.add_argument("--path_dataset", default="/mnt/personal/vlkjan6/setprop")
 ap.add_argument("--shipped_tag", default="/setprop")
 ap.add_argument("--alt_tag", default="/setprop_framefix")
+ap.add_argument("--shipped_name", default="SHIPPED (mirrored)", help="label for the --path_dataset arm")
+ap.add_argument("--alt_name", default="FRAME-FIXED", help="label for the --alt_tag arm")
 ap.add_argument("--frames", type=int, default=2500)
 ap.add_argument("--seed", type=int, default=0)
 a = ap.parse_args()
@@ -130,7 +132,7 @@ def boot(y, fid, n=400):
     return np.percentile(out, [2.5, 97.5])
 
 res = {}
-for alt, name in [(False, "SHIPPED (mirrored)"), (True, "FRAME-FIXED")]:
+for alt, name in [(False, a.shipped_name), (True, a.alt_name)]:
     y, fid = harvest(alt)
     assert y.size > 0, (
         f"{name}: zero labeled points. The label root was redirected to a path "
@@ -147,10 +149,11 @@ for alt, name in [(False, "SHIPPED (mirrored)"), (True, "FRAME-FIXED")]:
     print(f"  best constant c* = {c:.4f}")
     print(f"  BOUND = {b:.4f}   95% CI [{ci[0]:.4f}, {ci[1]:.4f}]")
 
-fs = set(np.unique(res["SHIPPED (mirrored)"][1]))
-ff = set(np.unique(res["FRAME-FIXED"][1]))
+fs = set(np.unique(res[a.shipped_name][1]))
+ff = set(np.unique(res[a.alt_name][1]))
 print(f"\nframe overlap between arms: {len(fs & ff)} shared, "
-      f"{len(fs - ff)} shipped-only, {len(ff - fs)} fixed-only "
-      f"(both label sets have 106059 files, so these should match)")
-print(f"acceptance bound in use for v6: 0.0578 (mirrored labels). "
-      f"A corrected run must be scored against the FRAME-FIXED number above.")
+      f"{len(fs - ff)} first-only, {len(ff - fs)} alt-only "
+      f"(equal label coverage means these should match; a larger first-only "
+      f"count means the first set labels scenes the alt set does not)")
+print(f"acceptance bound in use for v6: 0.0578 (mirrored labels), v7 config: 0.0369 "
+      f"(framefix). A run must be scored against the bound of the labels it READS.")
