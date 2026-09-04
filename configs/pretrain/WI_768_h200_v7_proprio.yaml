@@ -107,20 +107,15 @@ proprio_supervision:
   hidden_dim: 128
   lr: 0.001
   huber_delta: 0.05
-  # Best-constant bound for THE LABELS THIS RUN READS (setprop_v7, frame
-  # corrected). 0.0369, 95% CI [0.0296, 0.0452], measured through the real
-  # __getitem__ by scripts/measure_proprio_bound.py against 0.0598
-  # [0.0485, 0.0735] for v6's mirrored labels -- disjoint CIs. Correct
-  # registration shrinks the compression residual (mean 0.087 -> 0.049, std
-  # 0.142 -> 0.105) because the wheel is finally differenced against the
-  # ground it sat on; much of v6's label spread was registration error.
-  #
-  # v6 scored against 0.0578 while reading mirrored labels, which was correct
-  # for it. Leaving 0.0578 here would hand v7 a PASS it did not earn: its
-  # labels are easier to fit with a constant, so the bar must drop with them.
-  # Readout only -- no gradient depends on it, so the v7-vs-v6 delta is still
-  # the labels and nothing else.
-  constant_bound: 0.0369
+  # Best-constant bound for THE LABELS THIS RUN READS: setprop/HELHEST ->
+  # HELHEST_v1_3 proprio_labels (URDF wheels, measured map cells only,
+  # --min_validity 2; DRIFT job 11484024). 0.0508, 95% CI [0.0422, 0.0593],
+  # measured through the real __getitem__ by scripts/measure_proprio_bound.py
+  # (RCI job 11484045). Earlier bounds belong to label sets that no longer
+  # exist on disk: 0.0369 framefix (old wheels, ungated), 0.0578 v6 mirrored.
+  # Readout only -- no gradient depends on it. Re-measure whenever the labels
+  # are regenerated.
+  constant_bound: 0.0508
   # Attach the auxiliary to backbone layer 12, NOT the final classif output.
   # v5 supervised the post-classif features (1280-wide, projected to match the
   # DINOv3 teacher). DRIFT's measurements say that is the wrong place: layers

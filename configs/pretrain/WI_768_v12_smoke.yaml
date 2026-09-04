@@ -54,4 +54,6 @@ proprio_supervision:
   hidden_dim: 128
   lr: 0.001
   huber_delta: 0.05
+  # v1_3 gated labels, job 11484045; see WI_768_h200_v7_proprio.yaml
+  constant_bound: 0.0508
   depth: 12
