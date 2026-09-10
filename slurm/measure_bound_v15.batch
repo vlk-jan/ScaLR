@@ -1,0 +1,58 @@
+#!/bin/bash
+#SBATCH --nodes=1
+#SBATCH --ntasks-per-node=1
+#SBATCH --time=3:00:00
+#SBATCH --error=slurm/out/measure_bound_v15_%j.err
+#SBATCH --output=slurm/out/measure_bound_v15_%j.out
+#SBATCH --partition=cpu
+#SBATCH --cpus-per-task=8
+#SBATCH --mem=64G
+source .h200_env
+cd "$SLURM_SUBMIT_DIR" || exit 1
+# Best-constant acceptance bound for the v1.5 labels, measured through the real
+# __getitem__. v1.5 = v1.4 with 119 segment boundaries joined across a standstill
+# the wheel encoders, the live /odom and the IMU all confirm (DRIFT
+# scripts/data/build_v1_5.py, manifest odometry_segment_join).
+#
+# Why the bound moves at all: the labels do. A window is clamped at a segment
+# seam, so removing 119 seams lengthens the windows near them and admits the
+# ones that straddled them. The v1.4 bound (job 11556463) is NOT valid for these
+# labels, and any config reading them must carry the number this job prints as
+# constant_bound.
+#
+# Read the direction, not only the value: the recovered windows skew heavily
+# toward a parked robot (45% under 5 cm of wheel travel over the horizon), whose
+# contribution is almost entirely VALIDITY_ANCHORED cells -- the pseudo-ground
+# under the robot's own wheels. If the bound moves a lot, suspect that mix
+# before crediting the join.
+#
+# Run AFTER DRIFT slurm/gen_proprio_v1_5.batch has written the labels:
+#   sbatch slurm/measure_bound_v15.batch
+R=/mnt/personal/vlkjan6/HELHEST_v1_5
+D=/mnt/personal/vlkjan6/setprop_v15
+
+# The dataset root ScaLR reads is a directory of symlinks; the arm is only the
+# v1.5 arm if its HELHEST link actually resolves to the v1.5 root.
+[ "$(readlink -f "$D/HELHEST")" = "$(readlink -f "$R")" ] || { echo "FATAL: $D/HELHEST does not point at $R"; exit 1; }
+for n in HELHEST_v1_raw RELLIS-3D ROUGH; do
+  [ -e "$D/$n" ] || { echo "FATAL: $D/$n missing -- the merged dataset is incomplete"; exit 1; }
+done
+grep -q '"dataset_version": "1.5"' "$R/manifest.json" || { echo "FATAL: $R is not a v1.5 root"; exit 1; }
+joined=$(cat "$R"/[0-9][0-9][0-9][0-9]/odometry_segments.txt | grep -c '+joined')
+[ "$joined" -gt 0 ] || { echo "FATAL: no +joined segment; $R is not the joined root"; exit 1; }
+
+n=$(find "$R" -maxdepth 3 -path '*/proprio_labels/*.npz' | wc -l)
+echo "v1_5 label files: $n (joined segments: $joined)"
+[ "$n" -gt 50000 ] || { echo "FATAL: labels incomplete -- run DRIFT slurm/gen_proprio_v1_5.batch first"; exit 1; }
+# Written by that job as its own manifest key, so this cannot pass on a value
+# inherited from the base root.
+grep -q '"min_validity": 2' "$R/manifest.json" || { echo "FATAL: manifest not at min_validity 2"; exit 1; }
+grep -q '"proprio_labels_v1_5"' "$R/manifest.json" || { echo "FATAL: manifest does not record proprio_labels_v1_5 -- these are not the v1.5 labels"; exit 1; }
+v14=$(find /mnt/personal/vlkjan6/HELHEST_v1_4 -maxdepth 3 -path '*/proprio_labels/*.npz' | wc -l)
+echo "for reference, v1.4 holds $v14 label files on the same clouds"
+
+# The alt arm is v1.4 on the SAME clouds: the paired reference that says how
+# much of any change is the join rather than the sampling.
+python3 -u scripts/measure_proprio_bound.py --frames 2500 \
+  --path_dataset "$D" --shipped_tag /setprop_v15 --alt_tag /setprop_v14 \
+  --shipped_name "V1_5 LABELS (standstill segments joined)" --alt_name "V1_4 LABELS (same clouds, unjoined)"
