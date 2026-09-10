@@ -34,7 +34,9 @@ D=/mnt/personal/vlkjan6/setprop_v15
 # The dataset root ScaLR reads is a directory of symlinks; the arm is only the
 # v1.5 arm if its HELHEST link actually resolves to the v1.5 root.
 [ "$(readlink -f "$D/HELHEST")" = "$(readlink -f "$R")" ] || { echo "FATAL: $D/HELHEST does not point at $R"; exit 1; }
-for n in HELHEST_v1_raw RELLIS-3D ROUGH; do
+# RELLIS-3D and ROUGH are the other two arms datasets/robotics_merged.py reads;
+# HELHEST_v1_raw was the pre-single-root copy and was deleted 2026-09-10.
+for n in RELLIS-3D ROUGH; do
   [ -e "$D/$n" ] || { echo "FATAL: $D/$n missing -- the merged dataset is incomplete"; exit 1; }
 done
 grep -q '"dataset_version": "1.5"' "$R/manifest.json" || { echo "FATAL: $R is not a v1.5 root"; exit 1; }
