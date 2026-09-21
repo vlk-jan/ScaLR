@@ -1,0 +1,23 @@
+#!/bin/bash
+#SBATCH --nodes=1
+#SBATCH --ntasks-per-node=1
+#SBATCH --time=00:40:00
+#SBATCH --error=slurm/out/robotics_v2_smoke_err.out
+#SBATCH --output=slurm/out/robotics_v2_smoke_std.out
+#SBATCH --partition=h200fast
+#SBATCH --cpus-per-task=12
+#SBATCH --gres=gpu:1
+#SBATCH --mem=128G
+
+# One H200: batch 4 at 20k points OOMs a 40 GB A100, and the GPU quota does not
+# admit four. Mechanics smoke for the HELHEST v2 loader inside the merged
+# corpus; see configs/pretrain/WI_768_robotics_v2_smoke.yaml. The merged root
+# needs HELHEST_V2 -> a HELHEST v2 root carrying scalr_keyframes.lst
+# (scripts/write_helhest_v2_keyframes.py).
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+source .h200_env
+echo "host $(hostname) python $(which python)"; nvidia-smi -L
+python distill.py --config configs/pretrain/WI_768_robotics_v2_smoke.yaml \
+  --log_path logs/pretraining/robotics_v2_smoke \
+  --dataset robotics_v2 --path_dataset /mnt/personal/vlkjan6/setprop \
+  --gpu 0 --bf16 --warm_start_ckpt logs/pretraining/full_v4/ckpt_last.pth
