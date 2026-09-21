@@ -1,12 +1,20 @@
 import os
 
+import numpy as np
+
 from .im_pc_dataset import ImPcDataset
 from .rellis_for_scalr import RellisDistill
 from .rough_for_scalr import RoughDistill
 from .helhest_for_scalr import HelhestDistill
+from .helhest_v2_for_scalr import HelhestV2Distill
 
 
 class RoboticsMergedDistill(ImPcDataset):
+    # The HELHEST v2 member is opt-in through the subclass below, not picked up
+    # from whether <root>/HELHEST_V2 happens to exist: a corpus that silently
+    # grows or shrinks with a symlink is two different trainings under one name.
+    INCLUDE_HELHEST_V2 = False
+
     def __init__(self, drift_val_exclusion=None, **kwargs):
         super().__init__(**kwargs)
 
@@ -29,15 +37,28 @@ class RoboticsMergedDistill(ImPcDataset):
             drift_val_exclusion=drift_val_exclusion, **kwargs
         )
 
+        self.members = [self.rellis_os, self.rellis_vel, self.rough, self.helhest]
+
+        if self.INCLUDE_HELHEST_V2:
+            # Its own directory: the two HELHEST rigs never share a root.
+            kwargs["rootdir"] = os.path.join(rootdir, "HELHEST_V2")  # Odin1
+            self.helhest_v2 = HelhestV2Distill(**kwargs)
+            self.members.append(self.helhest_v2)
+
+        self._ends = np.cumsum([len(m) for m in self.members])
+
     def __len__(self):
-        return len(self.rellis_os) + len(self.rellis_vel) + len(self.rough) + len(self.helhest)
+        return int(self._ends[-1])
 
     def __getitem__(self, idx):
-        if idx < len(self.rellis_os):
-            return self.rellis_os[idx]
-        elif idx >= len(self.rellis_os) and idx < len(self.rellis_os) + len(self.rellis_vel):
-            return self.rellis_vel[idx - len(self.rellis_os)]
-        elif idx >= len(self.rellis_os) + len(self.rellis_vel) and idx < len(self.rellis_os) + len(self.rellis_vel) + len(self.rough):
-            return self.rough[idx - len(self.rellis_os) - len(self.rellis_vel)]
-        else:
-            return self.helhest[idx - len(self.rellis_os) - len(self.rellis_vel) - len(self.rough)]
+        # Members are concatenated in order; sampling is uniform over the
+        # concatenation, so each member's share is its length.
+        k = int(np.searchsorted(self._ends, idx, side="right"))
+        start = 0 if k == 0 else int(self._ends[k - 1])
+        return self.members[k][idx - start]
+
+
+class RoboticsV2MergedDistill(RoboticsMergedDistill):
+    """`--dataset robotics_v2`: the robotics corpus plus <root>/HELHEST_V2."""
+
+    INCLUDE_HELHEST_V2 = True

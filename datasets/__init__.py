@@ -15,7 +15,7 @@
 from .pc_dataset import Collate
 from .im_pc_dataset import CollateDistillation
 # from .merged_datasets import MergedDatasetsDistill
-from .robotics_merged import RoboticsMergedDistill
+from .robotics_merged import RoboticsMergedDistill, RoboticsV2MergedDistill
 # from .nuscenes_for_scalr import (
 #     NuScenesSemSeg,
 #     NuScenesSemSeg_1p,
@@ -36,6 +36,7 @@ from .robotics_merged import RoboticsMergedDistill
 from .rellis_for_scalr import RellisDistill, RellisSemSeg
 from .rough_for_scalr import RoughDistill, RoughSemSeg
 from .helhest_for_scalr import HelhestDistill, HelhestSemSeg
+from .helhest_v2_for_scalr import HelhestV2Distill
 
 
 LIST_DATASETS = {
@@ -70,5 +71,7 @@ LIST_DATASETS_DISTILL = {
     "rellis": RellisDistill,
     "rough": RoughDistill,
     "helhest": HelhestDistill,
+    "helhest_v2": HelhestV2Distill,
     "robotics": RoboticsMergedDistill,
+    "robotics_v2": RoboticsV2MergedDistill,
 }

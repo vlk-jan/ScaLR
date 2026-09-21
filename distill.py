@@ -68,7 +68,7 @@ def get_datasets(config, args):
     # DRIFT_N_FOLDS block); naming it for any other dataset is a config error
     # and raises rather than being silently ignored.
     excl = (config.get("proprio_supervision") or {}).get("drift_val_exclusion")
-    if args.dataset.lower() in ("helhest", "robotics"):
+    if args.dataset.lower() in ("helhest", "robotics", "robotics_v2"):
         kwargs["drift_val_exclusion"] = excl
     elif excl not in (None, "none"):
         raise ValueError(
