@@ -97,6 +97,8 @@ class RellisDistill(ImPcDataset):
         super().__init__(**kwargs)
 
         self.lidar = lidar
+        # Ground height in each lidar's own frame (ImPcDataset.height_shift)
+        self.GROUND_Z = -1.07 if lidar == "os" else -0.89
 
         # For normalizing intensities
         if lidar == "os":

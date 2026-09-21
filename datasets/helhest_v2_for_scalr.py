@@ -51,8 +51,9 @@ of the robotics corpus tells the network its own mounting height. Measured
 ground z (mode over 1.5-5 m): RELLIS os1 -1.06, RELLIS vel -0.86, ROUGH
 -0.42, HELHEST v1 -0.30 on all three outings, HELHEST v2 -0.30 on all three
 sessions. base_link is what makes the two HELHEST rigs agree -- their lidars
-sit at different heights (+0.145 vs +0.10). Normalising RELLIS and ROUGH to a
-common ground height is a corpus-level decision and is not taken here.
+sit at different heights (+0.145 vs +0.10). `point_backbone.ground_z` shifts
+every member onto one ground height (ImPcDataset.height_shift); at -0.29 this
+loader and v1 are left untouched.
 """
 
 import json
@@ -143,6 +144,8 @@ def project_equidistant(p_cam, K, D):
 
 
 class HelhestV2Distill(ImPcDataset):
+    GROUND_Z = -0.29  # base_link, same as v1 (ImPcDataset.height_shift)
+
     def __init__(self, keyframes_file=KEYFRAMES_FILE, crop_rows=CROP_ROWS, **kwargs):
         super().__init__(**kwargs)
 

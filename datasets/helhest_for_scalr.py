@@ -279,6 +279,10 @@ class HelhestSemSeg(PCDataset):
         return pc, labels, self.list_keyframes[index][0].split("/")[-1]
 
 class HelhestDistill(ImPcDataset):
+    # base_link. A raw-frame (unmanifested) root sits elsewhere and is refused
+    # in __init__ if height normalisation is on.
+    GROUND_Z = -0.29
+
     def __init__(self, drift_val_exclusion=None, **kwargs):
         super().__init__(**kwargs)
 
@@ -286,6 +290,11 @@ class HelhestDistill(ImPcDataset):
         self.mean_int = MEAN_INT
         self.std_int = STD_INT
         self.conv = root_conventions(self.rootdir)
+        if self.ground_z is not None and self.conv["frame"] != "base_link":
+            raise ValueError(
+                f"ground_z is set, but {self.rootdir} ships raw-lidar-frame clouds; "
+                f"GROUND_Z = {self.GROUND_Z} was measured in base_link."
+            )
 
         # Withhold the proprio aux target on DRIFT's validation fold. Off by
         # default; see the DRIFT_N_FOLDS block above for what the values mean.

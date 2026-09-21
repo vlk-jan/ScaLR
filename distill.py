@@ -46,6 +46,9 @@ def get_datasets(config, args):
         "fov_xyz": config["point_backbone"]["fov"],
         "max_points": config["point_backbone"]["max_points"],
         "im_size": config["image_backbone"]["im_size"],
+        # Shift every dataset's ground onto one height; absent = off, which is
+        # what every existing checkpoint saw. See ImPcDataset.height_shift.
+        "ground_z": config["point_backbone"].get("ground_z"),
         # ImPcDataset._check_aspect RAISES when im_size's aspect differs from
         # the camera's; this accepts the stretch deliberately.
         "allow_aspect_mismatch": getattr(args, "allow_aspect_mismatch", False),

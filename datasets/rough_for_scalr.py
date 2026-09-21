@@ -77,6 +77,8 @@ class RoughSemSeg(PCDataset):
         return pc, labels, self.list_keyframes[index][0].split("/")[-1]
 
 class RoughDistill(ImPcDataset):
+    GROUND_Z = -0.41  # os_sensor frame (ImPcDataset.height_shift)
+
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
 

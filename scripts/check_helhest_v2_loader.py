@@ -6,6 +6,8 @@
      an exception surfaces (ImPcDataset.__getitem__ retries on any exception).
   3. the real __getitem__, and one collated batch.
   4. --overlay: the final pairs drawn on the cropped image, one per session.
+  5. with --merged_root: point_backbone.ground_z puts every member's ground at
+     one height, measured on what __getitem__ returns.
 
 CPU only. Usage: python scripts/check_helhest_v2_loader.py [--merged_root DIR]
 """
@@ -85,6 +87,29 @@ if a.merged_root:
     out = m[len(m) - 1]
     assert tuple(out[1].shape) == (1, 3, 240, 384)
     print("    member index bands OK; last sample comes from HELHEST_V2")
+
+# 5 ---------------------------------------------------------------------------
+if a.merged_root:
+    def fed_ground(member, n=24):
+        g = []
+        for i in np.random.default_rng(5).choice(len(member), n, replace=False):
+            f = member[int(i)][0][0]                       # (C, N): intensity, x, y, z, radius
+            d = np.hypot(f[1], f[2]); z = f[3][(d > 1.5) & (d < 5.0)]
+            if len(z) > 300:
+                h, e = np.histogram(z, bins=np.arange(-3, 1.5, 0.04)); g.append(e[np.argmax(h)] + 0.02)
+        return float(np.median(g))
+    kw = dict(KW, translation_range=0.0)                   # the ring needs the origin where the robot is
+    off = LIST_DATASETS_DISTILL["robotics_v2"](rootdir=a.merged_root, phase="train", **kw)
+    on = LIST_DATASETS_DISTILL["robotics_v2"](rootdir=a.merged_root, phase="train", ground_z=-0.29, **kw)
+    print("[5] ground z as fed to the backbone (mode, 1.5-5 m), ground_z off -> -0.29")
+    for name, m0, m1 in zip(("rellis_os", "rellis_vel", "rough", "helhest_v1", "helhest_v2"), off.members, on.members):
+        g0, g1 = fed_ground(m0), fed_ground(m1)
+        print(f"    {name:11s} shift {m1.height_shift():+.2f}   {g0:+.2f} -> {g1:+.2f}")
+        assert abs(g1 + 0.29) < 0.12, (name, g1)
+    try:
+        LIST_DATASETS_DISTILL["robotics"](rootdir=a.merged_root, phase="train", ground_z=-0.29, **kw)
+    except Exception as e:
+        raise AssertionError(f"robotics + ground_z failed to build: {e}")
 
 # 4 ---------------------------------------------------------------------------
 if a.overlay:

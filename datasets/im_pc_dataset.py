@@ -98,9 +98,14 @@ class ImPcDataset(PCDataset):
         im_size,
         translation_range=0.0,
         allow_aspect_mismatch=False,
+        ground_z=None,
         **kwargs,
     ):
         super().__init__(**kwargs)
+
+        # Height normalisation, see height_shift(). None = off.
+        self.ground_z = None if ground_z is None else float(ground_z)
+        self._height_shift = None
 
         assert self.phase == "train"
 
@@ -215,6 +220,41 @@ class ImPcDataset(PCDataset):
             "deliberately (see ImPcDataset._check_aspect)."
         )
 
+    # Height of the ground in THIS dataset's cloud frame, in metres: the mode of
+    # z over points 1.5-5 m from the origin, median over 200 random keyframes
+    # (2026-09-21). Set by every member that can be height-normalised.
+    GROUND_Z = None
+
+    def height_shift(self):
+        """z offset that puts this dataset's ground at `ground_z`, or 0.0.
+
+        z is a network input, and the only translation augmentation is in xy,
+        so every dataset tells the backbone how high its lidar is mounted:
+        ground sits at -1.07 m in RELLIS's Ouster frame, -0.89 in its Velodyne
+        frame, -0.41 in ROUGH and -0.29 in both HELHEST rigs (base_link). With
+        `point_backbone.ground_z` set, each cloud is shifted so its dataset's
+        ground lands on that one value. Upstream ScaLR does the same thing for
+        Pandaset with a hard `pc[:, 2] -= 1.6`.
+
+        The shift is per DATASET, not per frame: it removes the mount, and
+        leaves slopes, kerbs and the robot's own pitch in the data. It is
+        applied after the image pairing and the proprio label lookup, which
+        both need the cloud's own frame, and before the augmentations.
+
+        Use -0.29: that leaves HELHEST where DRIFT reads it.
+        """
+        if self._height_shift is None:
+            if self.ground_z is None:
+                self._height_shift = 0.0
+            elif self.GROUND_Z is None:
+                raise ValueError(
+                    f"ground_z={self.ground_z} is set, but {type(self).__name__} "
+                    f"declares no GROUND_Z to normalise from."
+                )
+            else:
+                self._height_shift = self.ground_z - float(self.GROUND_Z)
+        return self._height_shift
+
     def resize_im(self, im, pairing_images):
         self._check_aspect(im.shape[-2], im.shape[-1])
         # Rescale pixel coordinates
@@ -243,6 +283,8 @@ class ImPcDataset(PCDataset):
         return new[keep], keep
 
     def __getitem__(self, index):
+        # Outside the retry loop below, which swallows every exception.
+        dz = self.height_shift()
         for _ in range(8):
             try:
                 # Load original point cloud
@@ -302,6 +344,11 @@ class ImPcDataset(PCDataset):
                 pairing_images = pairing_images[keep]
                 proprio_label = proprio_label[idx]
                 proprio_mask = proprio_mask[idx]
+
+                # Put the ground at the corpus-wide height (see height_shift)
+                if dz != 0.0:
+                    pc = pc.copy()
+                    pc[:, 2] += dz
 
                 # Apply augmentations
                 pc, _ = self.pc_augmentations(pc, None)
