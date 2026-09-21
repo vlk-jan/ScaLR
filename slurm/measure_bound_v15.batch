@@ -7,7 +7,10 @@
 #SBATCH --partition=cpu
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=64G
-source .h200_env
+# The uv environment (pyproject.toml + uv.lock; `uv sync --extra cuda`), as in
+# DRIFT. No modules and no user site: the old .env / .h200_env relied on an
+# editable waffleiron install into a directory that no longer exists.
+PY=./.venv/bin/python
 cd "$SLURM_SUBMIT_DIR" || exit 1
 # Best-constant acceptance bound for the v1.5 labels, measured through the real
 # __getitem__. v1.5 = v1.4 with 119 segment boundaries joined across a standstill
@@ -55,6 +58,6 @@ echo "for reference, v1.4 holds $v14 label files on the same clouds"
 
 # The alt arm is v1.4 on the SAME clouds: the paired reference that says how
 # much of any change is the join rather than the sampling.
-python3 -u scripts/measure_proprio_bound.py --frames 2500 \
+$PY -u scripts/measure_proprio_bound.py --frames 2500 \
   --path_dataset "$D" --shipped_tag /setprop_v15 --alt_tag /setprop_v14 \
   --shipped_name "V1_5 LABELS (standstill segments joined)" --alt_name "V1_4 LABELS (same clouds, unjoined)"

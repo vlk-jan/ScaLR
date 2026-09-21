@@ -17,5 +17,8 @@
 # rationale, what to watch, and the acceptance test. No --warm_start_ckpt:
 # from scratch by design (the aux should shape the features from epoch 0).
 
-source .h200_env
-python distill.py --config configs/pretrain/WI_768_h200_v5_proprio.yaml --log_path logs/pretraining/full_v5_proprio --dataset robotics --path_dataset /mnt/personal/vlkjan6/setprop --multiprocessing-distributed --bf16
+# The uv environment (pyproject.toml + uv.lock; `uv sync --extra cuda`), as in
+# DRIFT. No modules and no user site: the old .env / .h200_env relied on an
+# editable waffleiron install into a directory that no longer exists.
+PY=./.venv/bin/python
+$PY distill.py --config configs/pretrain/WI_768_h200_v5_proprio.yaml --log_path logs/pretraining/full_v5_proprio --dataset robotics --path_dataset /mnt/personal/vlkjan6/setprop --multiprocessing-distributed --bf16

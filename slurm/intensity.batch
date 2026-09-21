@@ -11,6 +11,9 @@
 #SBATCH --mail-user=vlkjan6@fel.cvut.cz             # where send info about job
 #SBATCH --mail-type=ALL                             # what to send, valid type values are NONE, BEGIN, END, FAIL, REQUEUE, ALL
 
-source .env
+# The uv environment (pyproject.toml + uv.lock; `uv sync --extra cuda`), as in
+# DRIFT. No modules and no user site: the old .env / .h200_env relied on an
+# editable waffleiron install into a directory that no longer exists.
+PY=./.venv/bin/python
 
-python get_intensity.py --dataset helhest --path-dataset /mnt/personal/vlkjan6/setprop/HELHEST
+$PY get_intensity.py --dataset helhest --path-dataset /mnt/personal/vlkjan6/setprop/HELHEST

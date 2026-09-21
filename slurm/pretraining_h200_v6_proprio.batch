@@ -55,5 +55,8 @@
 # 110 h the risk is not the first step but hour 40, so it matches the smoke.
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
-source .h200_env
-python distill.py --config configs/pretrain/WI_768_h200_v6_proprio.yaml --log_path logs/pretraining/full_v6_proprio --dataset robotics --path_dataset /mnt/personal/vlkjan6/setprop --multiprocessing-distributed --bf16
+# The uv environment (pyproject.toml + uv.lock; `uv sync --extra cuda`), as in
+# DRIFT. No modules and no user site: the old .env / .h200_env relied on an
+# editable waffleiron install into a directory that no longer exists.
+PY=./.venv/bin/python
+$PY distill.py --config configs/pretrain/WI_768_h200_v6_proprio.yaml --log_path logs/pretraining/full_v6_proprio --dataset robotics --path_dataset /mnt/personal/vlkjan6/setprop --multiprocessing-distributed --bf16

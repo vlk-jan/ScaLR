@@ -19,5 +19,8 @@
 # No --restart: the teacher's output distribution changed completely, so warm-starting
 # from full_3.pth would begin from weights fitted to a degenerate target.
 
-source .env
-python distill.py --config configs/pretrain/WI_768_pretrain.yaml --log_path logs/pretraining/full_v4 --dataset robotics --path_dataset /mnt/personal/vlkjan6/setprop --multiprocessing-distributed --fp16
+# The uv environment (pyproject.toml + uv.lock; `uv sync --extra cuda`), as in
+# DRIFT. No modules and no user site: the old .env / .h200_env relied on an
+# editable waffleiron install into a directory that no longer exists.
+PY=./.venv/bin/python
+$PY distill.py --config configs/pretrain/WI_768_pretrain.yaml --log_path logs/pretraining/full_v4 --dataset robotics --path_dataset /mnt/personal/vlkjan6/setprop --multiprocessing-distributed --fp16

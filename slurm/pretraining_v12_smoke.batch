@@ -16,9 +16,12 @@
 # three symlinks (HELHEST -> HELHEST_v1_2, ROUGH and RELLIS-3D -> setprop's),
 # because RoboticsMergedDistill joins those three names onto --path_dataset.
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
-source .h200_env
+# The uv environment (pyproject.toml + uv.lock; `uv sync --extra cuda`), as in
+# DRIFT. No modules and no user site: the old .env / .h200_env relied on an
+# editable waffleiron install into a directory that no longer exists.
+PY=./.venv/bin/python
 echo "host $(hostname) python $(which python)"; nvidia-smi -L
-python distill.py --config configs/pretrain/WI_768_v12_smoke.yaml \
+$PY distill.py --config configs/pretrain/WI_768_v12_smoke.yaml \
   --log_path logs/pretraining/v12_smoke \
   --dataset robotics --path_dataset /mnt/personal/vlkjan6/scratch_consolidation/root_v12 \
   --gpu 0 --bf16 --warm_start_ckpt logs/pretraining/full_v4/ckpt_last.pth

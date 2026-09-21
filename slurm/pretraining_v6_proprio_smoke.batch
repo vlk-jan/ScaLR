@@ -69,5 +69,8 @@
 # submission died on a 96 MiB allocation with 1.87 GiB reserved-but-unallocated.
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
-source .h200_env
-python distill.py --config configs/pretrain/WI_768_v6_proprio_smoke.yaml --log_path logs/pretraining/v6_proprio_smoke_d12 --dataset robotics --path_dataset /mnt/personal/vlkjan6/setprop --multiprocessing-distributed --bf16 --warm_start_ckpt logs/pretraining/full_v4/ckpt_last.pth
+# The uv environment (pyproject.toml + uv.lock; `uv sync --extra cuda`), as in
+# DRIFT. No modules and no user site: the old .env / .h200_env relied on an
+# editable waffleiron install into a directory that no longer exists.
+PY=./.venv/bin/python
+$PY distill.py --config configs/pretrain/WI_768_v6_proprio_smoke.yaml --log_path logs/pretraining/v6_proprio_smoke_d12 --dataset robotics --path_dataset /mnt/personal/vlkjan6/setprop --multiprocessing-distributed --bf16 --warm_start_ckpt logs/pretraining/full_v4/ckpt_last.pth

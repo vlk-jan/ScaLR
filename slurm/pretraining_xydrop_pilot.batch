@@ -31,5 +31,8 @@
 # see the yaml's own comments for the reasoning, and watch Pretrain/loss
 # around step 300 for a discontinuity at the embed_warmup unfreeze point.
 
-source .h200_env
-python distill.py --config configs/pretrain/WI_768_xydrop_pilot.yaml --log_path logs/pretraining/xydrop_pilot --dataset robotics --path_dataset /mnt/personal/vlkjan6/setprop --multiprocessing-distributed --bf16 --warm_start_ckpt logs/pretraining/full_v4/ckpt_last.pth
+# The uv environment (pyproject.toml + uv.lock; `uv sync --extra cuda`), as in
+# DRIFT. No modules and no user site: the old .env / .h200_env relied on an
+# editable waffleiron install into a directory that no longer exists.
+PY=./.venv/bin/python
+$PY distill.py --config configs/pretrain/WI_768_xydrop_pilot.yaml --log_path logs/pretraining/xydrop_pilot --dataset robotics --path_dataset /mnt/personal/vlkjan6/setprop --multiprocessing-distributed --bf16 --warm_start_ckpt logs/pretraining/full_v4/ckpt_last.pth

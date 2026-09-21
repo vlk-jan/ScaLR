@@ -10,9 +10,12 @@
 
 # scripts/check_root_parity.py Part 1 + Part 2 (needs torch/torchvision, so
 # the ScaLR env): setprop vs HELHEST_v1_2 through the real loader.
-source .h200_env
+# The uv environment (pyproject.toml + uv.lock; `uv sync --extra cuda`), as in
+# DRIFT. No modules and no user site: the old .env / .h200_env relied on an
+# editable waffleiron install into a directory that no longer exists.
+PY=./.venv/bin/python
 echo "host $(hostname) python $(which python)"
-python scripts/check_root_parity.py --n_per_scene 8 --seed 1 --torch \
+$PY scripts/check_root_parity.py --n_per_scene 8 --seed 1 --torch \
   --batch 8 --workers 8 --batches 30 \
   --label_root /mnt/personal/vlkjan6/setprop_framefix/HELHEST \
   --compose_dir /mnt/personal/vlkjan6/scratch_consolidation/helhest_v12_labels

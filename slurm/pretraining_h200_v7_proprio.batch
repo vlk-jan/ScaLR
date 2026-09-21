@@ -84,7 +84,10 @@ export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 # weight 2.0, depth 12, bf16. So a v7-vs-v6 delta is the labels and nothing
 # else. The epoch-count confound against decorr is UNCHANGED and still applies.
 # ============================================================================
-source .h200_env
+# The uv environment (pyproject.toml + uv.lock; `uv sync --extra cuda`), as in
+# DRIFT. No modules and no user site: the old .env / .h200_env relied on an
+# editable waffleiron install into a directory that no longer exists.
+PY=./.venv/bin/python
 # ============================================================================
 # ON HOLD -- DO NOT SUBMIT. User decision, 2026-08-31.
 #
@@ -162,4 +165,4 @@ source .h200_env
 # terms, correct labels did not help the objective, and the aux hypothesis is
 # weakened regardless of what the downstream A/B says.
 
-python distill.py --config configs/pretrain/WI_768_h200_v7_proprio.yaml --log_path logs/pretraining/full_v7_proprio --dataset robotics --path_dataset /mnt/personal/vlkjan6/setprop_v7 --multiprocessing-distributed --bf16
+$PY distill.py --config configs/pretrain/WI_768_h200_v7_proprio.yaml --log_path logs/pretraining/full_v7_proprio --dataset robotics --path_dataset /mnt/personal/vlkjan6/setprop_v7 --multiprocessing-distributed --bf16

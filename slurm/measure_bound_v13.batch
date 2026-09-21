@@ -7,7 +7,10 @@
 #SBATCH --partition=cpu
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=64G
-source .h200_env
+# The uv environment (pyproject.toml + uv.lock; `uv sync --extra cuda`), as in
+# DRIFT. No modules and no user site: the old .env / .h200_env relied on an
+# editable waffleiron install into a directory that no longer exists.
+PY=./.venv/bin/python
 cd "$SLURM_SUBMIT_DIR" || exit 1
 # Best-constant bound for the labels a run on the single root actually reads:
 # setprop/HELHEST -> HELHEST_v1_3, whose proprio_labels were generated on v1.3
@@ -20,6 +23,6 @@ cd "$SLURM_SUBMIT_DIR" || exit 1
 n=$(find /mnt/personal/vlkjan6/HELHEST_v1_3 -maxdepth 3 -path '*/proprio_labels/*.npz' | wc -l)
 echo "v1_3 label files: $n"; [ "$n" -gt 50000 ] || { echo "FATAL: labels incomplete"; exit 1; }
 grep -q '"min_validity": 2' /mnt/personal/vlkjan6/HELHEST_v1_3/manifest.json || { echo "FATAL: manifest not at min_validity 2"; exit 1; }
-python3 -u scripts/measure_proprio_bound.py --frames 2500 \
+$PY -u scripts/measure_proprio_bound.py --frames 2500 \
   --path_dataset /mnt/personal/vlkjan6/setprop --shipped_tag /setprop --alt_tag /setprop_framefix \
   --shipped_name "V1_3 LABELS (URDF wheels, measured cells)" --alt_name "FRAMEFIX 2026-08-28 (old wheels, ungated)"
