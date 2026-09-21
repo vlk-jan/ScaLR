@@ -50,6 +50,18 @@ ap.add_argument("--shipped_name", default="SHIPPED (mirrored)", help="label for 
 ap.add_argument("--alt_name", default="FRAME-FIXED", help="label for the --alt_tag arm")
 ap.add_argument("--frames", type=int, default=2500)
 ap.add_argument("--seed", type=int, default=0)
+# This script measures the bound THROUGH the real __getitem__, so it hits
+# ImPcDataset._check_aspect, which now raises on an aspect mismatch. The
+# bound depends on the LABELS, not on the image, so a stretched camera does
+# not invalidate it -- measuring the bound of a config that is known to be
+# stretched is legitimate and default-on here.
+ap.add_argument(
+    "--strict_aspect",
+    action="store_true",
+    help="Let ImPcDataset._check_aspect raise if the config's im_size does "
+    "not match the camera aspect (default: allow it, since the constant "
+    "bound is a property of the labels and not of the image).",
+)
 a = ap.parse_args()
 
 cfg = yaml.safe_load(open(os.path.join("/home/vlkjan6/projects/ScaLR", a.config)))
@@ -64,9 +76,75 @@ kwargs = dict(
     max_points=cfg["point_backbone"]["max_points"],
     im_size=cfg["image_backbone"]["im_size"],
     translation_range=(cfg.get("augmentations") or {}).get("translation_range", 0.0),
+    allow_aspect_mismatch=not a.strict_aspect,
 )
 ds = LIST_DATASETS_DISTILL["robotics"](phase="train", **kwargs)
 print(f"dataset: {len(ds)} samples")
+
+
+# WHICH LABELS, AND UNDER WHICH GATE. --path_dataset defaults to
+# /mnt/personal/vlkjan6/setprop, whose HELHEST entry is a SYMLINK: it pointed at
+# HELHEST_v1_3 while the current root was v1.4 and then v1.5, so this script's
+# default measured a different label set than DRIFT was training on, with
+# nothing in the output saying so.
+#
+# The gate matters as much as the root. These labels are generated with
+# `--min_validity 2` (MEASURED cells only) = the DRIFT trainer's "measured"
+# --validity_gate level. The trainer's own historical gate is "founded"
+# (validity 1 or 2, i.e. also hull-interpolated cells) and its DEFAULT is off
+# (every driven cell, anchors and extrapolation included). The bound therefore
+# describes the tightest of the three populations, and quoting it against an
+# ungated arm compares two different things. See DRIFT
+# utils/trainer.py::validity_gate_mask.
+_GATE_NAMES = {
+    0: "off (every driven cell)",
+    1: "founded (validity 1 or 2)",
+    2: "measured (validity 2 only)",
+}
+
+
+def describe_labels(tag_root, name):
+    import glob, json
+
+    print(f"\n{name} label provenance")
+    real = os.path.realpath(tag_root)
+    print(f"  path       {tag_root}")
+    if real != os.path.abspath(tag_root):
+        print(f"  RESOLVES TO {real}   <-- symlink; THIS is the root measured")
+    mpath = os.path.join(real, "manifest.json")
+    minv = None
+    if os.path.exists(mpath):
+        try:
+            block = json.load(open(mpath)).get("proprio_labels", {})
+        except Exception as e:
+            block = {}
+            print(f"  manifest unreadable: {e}")
+        minv = block.get("min_validity")
+        for k in ("status", "coverage", "command", "min_validity"):
+            if k in block:
+                print(f"  {k:<10} {block[k]}")
+    else:
+        print(f"  no manifest.json at {mpath}")
+    hits = sorted(glob.glob(os.path.join(real, "[0-9]" * 4, "proprio_labels", "*.npz")))
+    if not hits:
+        print("  no proprio_labels/*.npz under this root")
+        return
+    z = np.load(hits[0], allow_pickle=True)
+    file_minv = int(z["min_validity"]) if "min_validity" in z.files else None
+    def _f(k):
+        return z[k].item() if k in z.files else "?"
+    print(
+        f"  sample     {os.path.relpath(hits[0], real)}  min_validity={file_minv}"
+        f"  dataset_version={_f('dataset_version')}  rig={_f('rig')}"
+    )
+    gate = file_minv if file_minv is not None else minv
+    print(f"  GATE       --min_validity {gate} = DRIFT --validity_gate {_GATE_NAMES.get(gate, '?')}")
+    if minv is not None and file_minv is not None and minv != file_minv:
+        print(f"  !! manifest says min_validity {minv}, the label file says {file_minv}")
+
+
+for _tag, _name in ((a.shipped_tag, a.shipped_name), (a.alt_tag, a.alt_name)):
+    describe_labels(a.path_dataset.replace(a.shipped_tag, _tag) + "/HELHEST", _name)
 
 _orig = H.HelhestDistill.load_proprio_labels
 ALT = {"on": False}
