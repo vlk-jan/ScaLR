@@ -15,9 +15,13 @@
 # needs HELHEST_V2 -> a HELHEST v2 root carrying scalr_keyframes.lst
 # (scripts/write_helhest_v2_keyframes.py).
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
-source .h200_env
-echo "host $(hostname) python $(which python)"; nvidia-smi -L
-python distill.py --config configs/pretrain/WI_768_robotics_v2_smoke.yaml \
+# The uv environment (pyproject.toml + uv.lock, `uv sync --extra cuda`), as in
+# DRIFT: no modules, no user site. .h200_env is not used -- its activate names a
+# stale path and the waffleiron it relied on was an editable install into a
+# directory that no longer exists.
+PY=./.venv/bin/python
+echo "host $(hostname)"; $PY -c 'import sys, torch; print(sys.executable, torch.__version__, "cuda", torch.cuda.is_available())'; nvidia-smi -L
+$PY distill.py --config configs/pretrain/WI_768_robotics_v2_smoke.yaml \
   --log_path logs/pretraining/robotics_v2_smoke \
   --dataset robotics_v2 --path_dataset /mnt/personal/vlkjan6/setprop \
   --gpu 0 --bf16 --warm_start_ckpt logs/pretraining/full_v4/ckpt_last.pth

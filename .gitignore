@@ -17,9 +17,9 @@ dinov2_weights/
 dinov3_weights/
 
 # Other folders
-WaffleIron
 run_mode/
 .h200/
+/.venv/
 
 # SLURM job output
 slurm/out/

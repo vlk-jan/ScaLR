@@ -1,0 +1,61 @@
+[project]
+name = "scalr"
+version = "0.1.0"
+description = "Image-to-lidar distillation of vision foundation models into a WaffleIron backbone (robotics fork of valeoai/ScaLR)"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "numpy>=2.3.4",
+    "scipy>=1.16.2",
+    "pyyaml>=6.0.3",
+    "pillow>=11.3",
+    "tqdm>=4.67.1",
+    "tensorboard>=2.20.0",
+    # val_repre.py and scripts/check_helhest_v2_loader.py
+    "opencv-python-headless>=4.12",
+    "matplotlib>=3.10.7",
+    "waffleiron",
+]
+
+# torch and torchvision live in the cuda/cpu extras, not in dependencies, because
+# uv only honours an index override for a package listed under the extra that
+# selects it. Same arrangement and the same torch as DRIFT, which consumes the
+# backbones trained here. Every machine syncs with exactly one of them:
+#   dgx07 / rci        uv sync --extra cuda   -> 2.9.0+cu128
+#   no GPU             uv sync --extra cpu    -> 2.9.0+cpu, skips ~2.5 GB of CUDA libs
+[project.optional-dependencies]
+cuda = ["torch==2.9.0", "torchvision==0.24.0"]
+cpu = ["torch==2.9.0", "torchvision==0.24.0"]
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.uv]
+# A script repo, not a package: nothing here is installed, only its dependencies.
+package = false
+conflicts = [[{ extra = "cuda" }, { extra = "cpu" }]]
+
+[tool.uv.sources]
+# waffleiron is not on PyPI. It is the git submodule at ./WaffleIron, pinned to
+# vlk-jan/WaffleIron@drift -- upstream v0.3.1 plus the four activation swaps
+# (backbone ReLU->Mish x2, embedding ReLU->LeakyReLU x2) that every WI_*
+# checkpoint was trained with, and the same commit DRIFT pins. Upstream
+# valeoai/WaffleIron is NOT a substitute. Run `git submodule update --init`
+# before the first sync.
+waffleiron = { path = "WaffleIron", editable = true }
+
+torch = [
+    { index = "pytorch-cu128", extra = "cuda", marker = "sys_platform == 'linux'" },
+    { index = "pytorch-cpu", extra = "cpu", marker = "sys_platform == 'linux'" },
+]
+torchvision = [
+    { index = "pytorch-cu128", extra = "cuda", marker = "sys_platform == 'linux'" },
+    { index = "pytorch-cpu", extra = "cpu", marker = "sys_platform == 'linux'" },
+]

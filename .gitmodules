@@ -1,0 +1,4 @@
+[submodule "WaffleIron"]
+	path = WaffleIron
+	url = git@github.com:vlk-jan/WaffleIron.git
+	branch = drift
