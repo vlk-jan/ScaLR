@@ -1,0 +1,102 @@
+# v8: the first full pretraining on the robotics_v2 corpus -- RELLIS-3D (two
+# lidars), ROUGH, HELHEST v1.5 (Livox) and HELHEST v2 (Odin1), 278,219 samples.
+# From scratch, with the proprio auxiliary, on 3 H200s. Launcher:
+# slurm/pretraining_h200_v8_robotics_v2.batch. Mechanics proven by
+# WI_768_robotics_v2_smoke.yaml (job 11676729: 2,990 steps, loss 0.906 -> 0.795,
+# proprio_huber 0.066 -> 0.014, no errors).
+#
+# v7 never ran: it was held for the new rig (2026-08-31) and its config still
+# names two rigs at once. This file is what that hold was waiting for, and it
+# is coherent by construction -- every rig-specific setting below belongs to a
+# named member of the corpus:
+#
+#   im_size [240, 384]       aspect 1.600 = RELLIS and ROUGH 1920x1200, HELHEST
+#                            v1 1280x800, HELHEST v2 cropped to 1600x1000 by its
+#                            own loader (datasets/helhest_v2_for_scalr.py)
+#   constant_bound 0.0196    HELHEST v1.5 labels, the only labels in the corpus
+#   ground_z -0.29           both HELHEST rigs' base_link ground height
+#
+# WHAT IS NEW AGAINST v6, the last run that completed:
+#   corpus        +68,314 HELHEST v2 keyframes (24.6 %); HELHEST v1 is v1.5
+#   labels        v1.5, measured-cells gate, URDF wheels (v6's were mirrored)
+#   ground_z      every member's ground at one height (see below)
+#   im_size       camera-paired; v6 trained on a 1.25x-stretched camera
+#   environment   uv venv, torch 2.9.0 (v6: module torch 2.8.0)
+# So v8 is not an A/B against v6 on any single one of these.
+
+point_backbone:
+  size_input: 5
+  input_features: ["intensity", "xyz", "radius"]
+  nb_channels: 768
+  nb_class: 1280 # must match the ViT feature size
+  depth: 36
+  dim_proj: [2, 1, 0]
+  grid_shape: [[256, 256], [256, 32], [256, 32]]
+  fov: [[-64, -64, -8], [64, 64, 8]]
+  num_neighbors: 16
+  voxel_size: 0.1
+  max_points: 20000
+  layernorm: True
+  # z is a network input and the translation augmentation is xy-only, so without
+  # this every member tells the backbone its mounting height: ground sits at
+  # -1.07 m (RELLIS os1), -0.89 (RELLIS vel), -0.41 (ROUGH), -0.29 (HELHEST v1
+  # and v2). Each member is shifted by a per-dataset constant onto -0.29, which
+  # leaves HELHEST exactly where DRIFT reads it. ImPcDataset.height_shift.
+  ground_z: -0.29
+
+image_backbone:
+  images_encoder: "dinov3_vit_huge_p16"
+  feat: "x"
+  im_size: [240, 384]
+
+dataloader:
+  # 4 per GPU on 3 GPUs. 4/GPU is the validated load: the H200 sweep ran b4 at
+  # 89 GB and lost b8, and the robotics_v2 smoke held 4/GPU for 2,990 steps
+  # with Odin clouds (15-20k points after the crop, 3x HELHEST v1) in 9 of 10
+  # batches. Three GPUs rather than v6's four because the account's GPU quota
+  # is 6 and DRIFT arrays share it.
+  #
+  # ON 2 GPUS: batch_size 8, lr 0.004, --gres=gpu:2, and ~1.5x the wall clock.
+  # batch_size must stay a multiple of the GPU count (distill.py divides it).
+  batch_size: 12
+  num_workers: 56
+  # Matched to v6 in SAMPLES SEEN, not in epochs: v6 saw 25 x 183,056 = 4.58 M;
+  # 16 x 278,219 = 4.45 M. Epochs are not comparable across a corpus that grew
+  # by half, and 25 epochs here would be 7.0 M samples and ~6 days.
+  num_epochs: 16
+
+optim:
+  # Linear in the global batch, as every config here has been: 0.002 at 4
+  # (WI_768_pretrain), 0.008 at 16 (h200, v4-v7) -> 0.006 at 12.
+  lr: 0.006
+  weight_decay: 0.03
+  # v6's 1500 steps at batch 16 = 24,000 samples = 2,000 steps at batch 12.
+  iter_warmup: 2000
+  min_lr: 0.00001
+
+loss:
+  type: "l2"
+  collapse_weight: 0.0
+  collapse_margin: 0.5
+
+augmentations:
+  translation_range: 10.0
+
+proprio_supervision:
+  enabled: True
+  weight: 2.0
+  hidden_dim: 128
+  lr: 0.001
+  huber_delta: 0.05
+  # HELHEST v1.5 labels through setprop/HELHEST -> HELHEST_v1_5: BOUND 0.0196,
+  # 95 % CI [0.0154, 0.0241] (slurm/out/measure_bound_v15_11561034.out).
+  # HELHEST v2 has no labels; its frames reach the aux loss with an empty mask.
+  # Re-measure if the HELHEST symlink moves.
+  constant_bound: 0.0196
+  depth: null
+  # OFF, as in every run so far: the aux is supervised on all labelled frames,
+  # including the ones DRIFT validates on (datasets/helhest_for_scalr.py,
+  # DRIFT_N_FOLDS block). "scene" withholds DRIFT's scene-fold val scenes, which
+  # is 42 % of the labels, and the bound above would need re-measuring on what
+  # is left. A decision about how this backbone will be judged, not a default.
+  drift_val_exclusion: null

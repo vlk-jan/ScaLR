@@ -1,0 +1,66 @@
+#!/bin/bash
+
+#SBATCH --nodes=1
+#SBATCH --ntasks-per-node=1
+#SBATCH --time=130:00:00
+#SBATCH --error=slurm/out/v8_robotics_v2_err.out
+#SBATCH --output=slurm/out/v8_robotics_v2_std.out
+#SBATCH --partition=h200extralong
+#SBATCH --cpus-per-task=62
+#SBATCH --gres=gpu:3
+#SBATCH --mem=512G
+#SBATCH --mail-user=vlkjan6@fel.cvut.cz
+#SBATCH --mail-type=FAIL
+
+# v8: full from-scratch pretraining on the robotics_v2 corpus (RELLIS, ROUGH,
+# HELHEST v1.5 + HELHEST v2), proprio auxiliary on. Rationale and every
+# rig-specific constant: configs/pretrain/WI_768_h200_v8_robotics_v2.yaml.
+#
+# GPUS. Three, 4 samples each. The account's quota is 6 GPUs across all jobs
+# and DRIFT arrays share it; a 4-GPU job stops everything else. To run on two,
+# change --gres AND the config's batch_size (8) and lr (0.004) together.
+#
+# WALL CLOCK. 16 epochs x 23,185 steps (278,219 samples / 12). DDP runs at the
+# pace of one GPU's 4 samples: v6 measured 0.98 steps/s on small Livox clouds
+# under torch 2.8, the robotics_v2 smoke 1.25 steps/s on one GPU with Odin
+# clouds in the mix. At 1.0 steps/s that is 103 h, at 1.25 it is 82 h. 130 h
+# covers the slow case with margin; h200long's 72 h ceiling covers neither.
+# distill.py keeps logs/.../ckpt_last.pth, so a job that does die resumes with
+# --restart rather than starting over.
+#
+# BEFORE SUBMITTING
+#   - <path_dataset>/HELHEST_V2 must point at a HELHEST v2 root that carries
+#     scalr_keyframes.lst (scripts/write_helhest_v2_keyframes.py). The list is
+#     written INTO the root: a re-extraction of the root deletes it.
+#   - <path_dataset>/HELHEST must still resolve to HELHEST_v1_5, or the
+#     config's constant_bound describes other labels.
+#   - `git submodule update --init && uv sync --extra cuda` on a fresh clone.
+#   - .venv/bin/python scripts/check_helhest_v2_loader.py \
+#         --merged_root /mnt/personal/vlkjan6/setprop        (CPU, ~5 min)
+#
+# From scratch by design, as v5 and v6 were: no --warm_start_ckpt.
+
+set -euo pipefail
+cd "${SLURM_SUBMIT_DIR:-.}"
+
+D=/mnt/personal/vlkjan6/setprop
+[ -f "$D/HELHEST_V2/scalr_keyframes.lst" ] || { echo "missing $D/HELHEST_V2/scalr_keyframes.lst"; exit 1; }
+case "$(readlink -f "$D/HELHEST")" in
+  */HELHEST_v1_5) ;;
+  *) echo "$D/HELHEST resolves to $(readlink -f "$D/HELHEST"), not HELHEST_v1_5: constant_bound 0.0196 is a v1.5 number"; exit 1 ;;
+esac
+
+# Fragmentation guard, as in v6: a multi-day run dies at hour 40, not at step 1.
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+
+# The uv environment (pyproject.toml + uv.lock; `uv sync --extra cuda`), as in
+# DRIFT. No modules and no user site.
+PY=./.venv/bin/python
+echo "host $(hostname)  commit $(git rev-parse --short HEAD)  WaffleIron $(git -C WaffleIron rev-parse --short HEAD)"
+$PY -c 'import sys, torch; print(sys.executable, torch.__version__, "gpus", torch.cuda.device_count())'
+nvidia-smi -L
+
+$PY distill.py --config configs/pretrain/WI_768_h200_v8_robotics_v2.yaml \
+  --log_path logs/pretraining/full_v8_robotics_v2 \
+  --dataset robotics_v2 --path_dataset "$D" \
+  --multiprocessing-distributed --bf16
