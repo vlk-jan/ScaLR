@@ -7,8 +7,13 @@ from .helhest_for_scalr import HelhestDistill
 
 
 class RoboticsMergedDistill(ImPcDataset):
-    def __init__(self, **kwargs):
+    def __init__(self, drift_val_exclusion=None, **kwargs):
         super().__init__(**kwargs)
+
+        # HELHEST-only: the proprio auxiliary is DRIFT's compression target and
+        # only HELHEST carries it, so only HelhestDistill takes this kwarg.
+        # See helhest_for_scalr.py's DRIFT_N_FOLDS block.
+        self.drift_val_exclusion = drift_val_exclusion
 
         rootdir = kwargs["rootdir"]
 
@@ -20,7 +25,9 @@ class RoboticsMergedDistill(ImPcDataset):
         self.rough = RoughDistill(**kwargs)
 
         kwargs["rootdir"] = os.path.join(rootdir, "HELHEST")  # Livox Mid-360 LiDAR
-        self.helhest = HelhestDistill(**kwargs)
+        self.helhest = HelhestDistill(
+            drift_val_exclusion=drift_val_exclusion, **kwargs
+        )
 
     def __len__(self):
         return len(self.rellis_os) + len(self.rellis_vel) + len(self.rough) + len(self.helhest)

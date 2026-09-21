@@ -60,6 +60,23 @@ def get_datasets(config, args):
     if DATASET is None:
         raise ValueError(f"Dataset {args.dataset.lower()} not available.")
 
+    # Withhold the proprio aux target on DRIFT's validation fold. A config key
+    # rather than a CLI flag, because it must travel with constant_bound and
+    # path_dataset -- all three describe the same label set. None = off, which
+    # is what every existing checkpoint was trained with. Only the datasets
+    # that carry proprio labels accept it (see helhest_for_scalr.py's
+    # DRIFT_N_FOLDS block); naming it for any other dataset is a config error
+    # and raises rather than being silently ignored.
+    excl = (config.get("proprio_supervision") or {}).get("drift_val_exclusion")
+    if args.dataset.lower() in ("helhest", "robotics"):
+        kwargs["drift_val_exclusion"] = excl
+    elif excl not in (None, "none"):
+        raise ValueError(
+            f"proprio_supervision.drift_val_exclusion={excl!r} is set, but "
+            f"--dataset {args.dataset} carries no proprio labels for it to "
+            f"withhold."
+        )
+
     # Train dataset
     train_dataset = DATASET(phase="train", **kwargs)
 
