@@ -92,12 +92,24 @@ class ImPcDataset(PCDataset):
     Dataset matching a 3D points cloud and an image using projection.
     """
 
-    def __init__(self, max_points, im_size, translation_range=0.0, **kwargs):
+    def __init__(
+        self,
+        max_points,
+        im_size,
+        translation_range=0.0,
+        allow_aspect_mismatch=False,
+        **kwargs,
+    ):
         super().__init__(**kwargs)
 
         assert self.phase == "train"
 
         self.im_size = im_size
+        # See _check_aspect: an im_size whose aspect differs from the camera's
+        # hands the teacher a stretched world, silently, for the whole run.
+        # It RAISES by default; this opts out, for reproducing an old run or
+        # for a genuinely multi-camera corpus.
+        self.allow_aspect_mismatch = bool(allow_aspect_mismatch)
         self._aspect_checked = False
 
         self.limit_num_points = tr.LimitNumPoints(
@@ -143,17 +155,32 @@ class ImPcDataset(PCDataset):
         raise NotImplementedError()
 
     def _check_aspect(self, src_h, src_w):
-        """Warn once if im_size squashes this camera anisotropically.
+        """RAISE once if im_size squashes this camera anisotropically.
 
         The resize below scales height and width by DIFFERENT factors whenever
         im_size's aspect differs from the camera's, so the teacher sees a
-        stretched world and every patch covers a non-square piece of it. That
-        is not automatically a bug -- upstream ScaLR runs one im_size across
-        nuScenes, SemanticKITTI and Pandaset, whose cameras disagree far more
-        than this -- so it warns rather than raising, and reproducing an old
-        run keeps working. But it is worth knowing before a 3-day pretraining:
-        HELHEST v1's 1280x800 camera is stretched 1.25x by [224, 448], and the
-        Odin1's 1600x1296 is stretched 1.62x by the same setting.
+        stretched world and every patch covers a non-square piece of it, for
+        the whole run, with nothing else complaining. HELHEST v1's 1280x800
+        camera is stretched 1.25x by [224, 448], and the Odin1's 1600x1296 is
+        stretched 1.62x by the same setting.
+
+        THIS USED TO WARN. It raised nothing through v6, and a warning issued
+        once per dataset instance, from a worker process, several minutes into
+        a 3-day pretraining, is not a control: every executed HELHEST run --
+        proprio_pilot, decorr_pilot, posinv_pilot, xydrop_pilot, v5, v6 --
+        trained on the 1.25x-stretched camera and the warning changed nothing.
+        A setting that costs a rerun to get wrong belongs in the fail-fast
+        class, so it now raises by default and the opt-out is explicit.
+
+        THE OPT-OUT is `allow_aspect_mismatch` (distill.py's
+        --allow_aspect_mismatch). Two legitimate uses: reproducing one of the
+        runs above bit-for-bit, and a genuinely multi-camera corpus -- upstream
+        ScaLR runs one im_size across nuScenes, SemanticKITTI and Pandaset,
+        whose cameras disagree far more than this. The robotics corpus is such
+        a case in principle (RELLIS-3D, ROUGH and HELHEST share one im_size,
+        because distill.py builds ONE kwargs dict for all three), so if this
+        fires on a merged run the fix may be per-dataset im_size rather than
+        the flag. Either way it should be a decision, not a default.
         """
         if self._aspect_checked:
             return
@@ -171,13 +198,21 @@ class ImPcDataset(PCDataset):
             key=lambda s: abs((s[1] / s[0]) - (src_w / src_h)),
             default=None,
         )
-        warnings.warn(
+        msg = (
             f"im_size {list(self.im_size)} (aspect {w / h:.3f}) against a "
             f"{src_w}x{src_h} camera (aspect {src_w / src_h:.3f}) stretches the "
             f"image {stretch:.2f}x horizontally before the teacher sees it."
             + (f" Aspect-preserving alternative at a similar token budget: "
-               f"{list(best)}." if best else ""),
-            stacklevel=2,
+               f"{list(best)}." if best else "")
+        )
+        if self.allow_aspect_mismatch:
+            warnings.warn(msg + " (allowed by allow_aspect_mismatch)", stacklevel=2)
+            return
+        raise ValueError(
+            msg
+            + " Set the config's image_backbone.im_size to the camera-paired "
+            "value, or pass --allow_aspect_mismatch to accept the stretch "
+            "deliberately (see ImPcDataset._check_aspect)."
         )
 
     def resize_im(self, im, pairing_images):

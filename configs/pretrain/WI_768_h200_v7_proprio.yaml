@@ -78,6 +78,27 @@ image_backbone:
   # ImageTeacher asserts it. ImPcDataset._check_aspect warns at runtime if
   # this and the actual camera disagree.
   im_size: [272, 336]
+  #
+  # AUDIT 2026-09-10 -- THIS FILE NAMES TWO DIFFERENT RIGS AND MUST NOT BE
+  # LAUNCHED UNTIL ONE OF THEM WINS.
+  #   im_size [272, 336]                     -> Odin1, 1600x1296
+  #   constant_bound 0.0508, and this run's  -> HELHEST v1 Livox, 1280x800
+  #     launcher's --path_dataset
+  #     /mnt/personal/vlkjan6/setprop_v7
+  # Whichever rig it runs on, ALL of {im_size, constant_bound, path_dataset,
+  # proprio labels} belong to that rig and must move together, exactly as the
+  # constant_bound comment below already says for the labels. The two coherent
+  # settings are:
+  #   NEW RIG (Odin1)  im_size [272, 336], an Odin1 root, and a constant_bound
+  #                    re-measured on Odin1 labels -- 0.0508 is a Livox number
+  #                    and every label constant is rig-specific.
+  #   OLD RIG          im_size [240, 384], setprop_v7, constant_bound 0.0508.
+  #                    Contradicts the 2026-08-31 decision that there is to be
+  #                    no more old-rig pretraining.
+  # distill.py now RAISES on the mismatch rather than warning
+  # (datasets/im_pc_dataset.py::_check_aspect), so the incoherent combination
+  # can no longer start silently. Left unresolved here deliberately: picking
+  # one is the user's call, not the audit's.
 
 dataloader:
   batch_size: 16

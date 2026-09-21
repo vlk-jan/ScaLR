@@ -62,7 +62,26 @@ point_backbone:
 image_backbone:
   images_encoder: "dinov3_vit_huge_p16"
   feat: "x"
-  im_size: [224, 448]
+  # THE v6 RUN ITSELF USED [224, 448]. That value is upstream's, inherited
+  # from nuScenes and SemanticKITTI (aspect 2.0), and against HELHEST v1's
+  # 1280x800 camera (aspect 1.600, /mnt/personal/vlkjan6/HELHEST_v1_5/0015/
+  # camera_info.yaml) it scales width by 448/1280 = 0.350 and height by
+  # 224/800 = 0.280 -- a 1.25x horizontal stretch of every image the teacher
+  # ever saw, in proprio_pilot, decorr_pilot, posinv_pilot, xydrop_pilot, v5
+  # AND v6. Nothing complained: _check_aspect only warned, once, from a
+  # worker, minutes into a 3-day job.
+  #
+  # The value below is the camera-paired one: 240x384 has aspect exactly
+  # 1.600 and 15x24 = 360 patches against 14x28 = 392, i.e. 92% of the token
+  # budget. Same value as WI_768_v12_smoke.yaml and check_root_parity.py.
+  #
+  # TO REPRODUCE THE v6 RUN BIT-FOR-BIT, set [224, 448] back AND pass
+  # distill.py --allow_aspect_mismatch (the check now raises, see
+  # datasets/im_pc_dataset.py::_check_aspect). Note that the checkpoint is
+  # unaffected in SHAPE either way -- classif maps 768 -> the teacher's 1280
+  # regardless of im_size -- so WI_v6_proprio.pth still loads; only what the
+  # teacher saw during pretraining changes.
+  im_size: [240, 384]
 
 dataloader:
   batch_size: 16

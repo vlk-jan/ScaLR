@@ -46,6 +46,9 @@ def get_datasets(config, args):
         "fov_xyz": config["point_backbone"]["fov"],
         "max_points": config["point_backbone"]["max_points"],
         "im_size": config["image_backbone"]["im_size"],
+        # ImPcDataset._check_aspect RAISES when im_size's aspect differs from
+        # the camera's; this accepts the stretch deliberately.
+        "allow_aspect_mismatch": getattr(args, "allow_aspect_mismatch", False),
         # 0.0 (default) keeps the stock pipeline; see tr.Translation.
         "translation_range": (config.get("augmentations") or {}).get(
             "translation_range", 0.0
@@ -392,6 +395,19 @@ def get_default_parser():
         help="Enable bfloat16 autocast. Same speed as fp16 on Ampere and later "
         "but with float32's exponent range, so no gradient scaler is needed "
         "and there are no skipped steps or overflow stalls. Prefer this.",
+    )
+    parser.add_argument(
+        "--allow_aspect_mismatch",
+        action="store_true",
+        default=False,
+        help="Train even though image_backbone.im_size has a different aspect "
+        "ratio than the camera, which stretches every image before the teacher "
+        "sees it (im_size [224, 448] stretches HELHEST v1's 1280x800 by 1.25x "
+        "and the Odin1's 1600x1296 by 1.62x). Without this flag "
+        "ImPcDataset._check_aspect raises on the first batch instead of "
+        "warning, because through v6 the warning changed nothing: every "
+        "executed HELHEST run trained stretched. Pass it only to reproduce one "
+        "of those runs, or for a corpus whose cameras genuinely disagree.",
     )
 
     return parser
