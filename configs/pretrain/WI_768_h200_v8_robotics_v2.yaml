@@ -117,11 +117,12 @@ proprio_supervision:
   huber_delta: 0.05
   # HELHEST v1.5 labels through setprop/HELHEST -> HELHEST_v1_5: BOUND 0.0196,
   # 95 % CI [0.0154, 0.0241] (slurm/out/measure_bound_v15_11561034.out),
-  # measured on the ungated list. The gate keeps ~36.5k of the 67.1k labelled
-  # frames; slurm/measure_bound_v8.batch re-measures on the gated list and the
-  # number here is to be updated from its output. HELHEST v2 has no labels;
-  # its frames reach the aux loss with an empty mask.
-  constant_bound: 0.0196
+  # measured on the ungated list. Re-measured on the gated list as v8 samples
+  # it (slurm/measure_bound_v8.batch, job 11684404, 866 frames, 22.8 labelled
+  # pts/frame): BOUND 0.0188, 95 % CI [0.0154, 0.0229] -- the same labels,
+  # inside the ungated CI. HELHEST v2 has no labels; its frames reach the aux
+  # loss with an empty mask.
+  constant_bound: 0.0188
   depth: null
   # OFF, as in every run so far: the aux is supervised on all labelled frames,
   # including the ones DRIFT validates on (datasets/helhest_for_scalr.py,
