@@ -99,9 +99,15 @@ class ImPcDataset(PCDataset):
         translation_range=0.0,
         allow_aspect_mismatch=False,
         ground_z=None,
+        max_pairs=None,
         **kwargs,
     ):
         super().__init__(**kwargs)
+
+        # Cap on point-pixel pairs per frame, see __getitem__. None = off.
+        self.max_pairs = None if max_pairs is None else int(max_pairs)
+        if self.max_pairs is not None and self.max_pairs < 1:
+            raise ValueError(f"max_pairs must be >= 1, got {self.max_pairs}")
 
         # Height normalisation, see height_shift(). None = off.
         self.ground_z = None if ground_z is None else float(ground_z)
@@ -321,6 +327,20 @@ class ImPcDataset(PCDataset):
                 pc, images, pairing_images, pairing_points = self.map_pc_to_image(pc, index)
                 images = torch.tensor(np.array(images, dtype=np.float32).transpose(0, 3, 1, 2))
                 assert len(pairing_images) > 0, f"No points project into the image. For {self.list_keyframes[index][0]}"
+
+                # Cap the pairs. The distillation loss is one mean over every
+                # pair in the batch, so a frame's weight in the gradient is its
+                # pair count -- and that is set by the sensor, not by anything
+                # chosen: an Odin1 frame pairs ~7,100 points, a Livox frame
+                # ~1,300, a 360-degree Ouster ~1,800 (one camera). Measured
+                # on the robotics_v2 corpus, HELHEST v2 was 25 % of the frames
+                # and 61 % of the loss. A random subset of at most max_pairs
+                # per frame bounds that weight; the backbone still sees the
+                # whole cloud. Fresh subset every time the frame is drawn.
+                if self.max_pairs is not None and len(pairing_points) > self.max_pairs:
+                    sel = np.sort(np.random.choice(len(pairing_points), self.max_pairs, replace=False))
+                    pairing_points = pairing_points[sel]
+                    pairing_images = pairing_images[sel]
 
                 # Proprioceptive labels are looked up on the RAW ego-frame
                 # coordinates (the label grids live in that frame), so this

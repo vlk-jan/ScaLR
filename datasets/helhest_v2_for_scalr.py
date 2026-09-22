@@ -85,8 +85,9 @@ WHEEL_BOX = {"x": 0.45, "y": (0.22, 0.50), "z_min": -0.20}
 # Image rows kept, giving 1600x1000 = aspect 1.60 (see the module docstring).
 CROP_ROWS = (200, 1200)
 
-# Written by scripts/write_helhest_v2_keyframes.py. Not `keyframes.lst`: that
+# Written by scripts/write_scalr_keyframes.py. Not `keyframes.lst`: that
 # name is DRIFT's, derived from the height maps, and the root does not have it.
+# The v1 loader takes the same name through the same kwarg (v8 onwards).
 KEYFRAMES_FILE = "scalr_keyframes.lst"
 
 BODY_MASK = os.path.join(os.path.dirname(__file__), "assets", "helhest_v2_body_mask.png")
@@ -156,7 +157,7 @@ class HelhestV2Distill(ImPcDataset):
         lst = os.path.join(self.rootdir, keyframes_file)
         if not os.path.exists(lst):
             raise FileNotFoundError(
-                f"{lst} is missing. Write it with scripts/write_helhest_v2_keyframes.py "
+                f"{lst} is missing. Write it with scripts/write_scalr_keyframes.py "
                 f"--root {self.rootdir}; the v2 root ships no keyframe list of its own."
             )
         self.list_keyframes = np.loadtxt(lst, dtype=str)

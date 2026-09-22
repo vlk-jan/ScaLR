@@ -15,8 +15,12 @@ class RoboticsMergedDistill(ImPcDataset):
     # grows or shrinks with a symlink is two different trainings under one name.
     INCLUDE_HELHEST_V2 = False
 
-    def __init__(self, drift_val_exclusion=None, **kwargs):
+    def __init__(self, drift_val_exclusion=None, helhest_keyframes=None, **kwargs):
         super().__init__(**kwargs)
+
+        # One keyframe file name for both HELHEST rigs; None = each loader's
+        # default (v1 keyframes.lst, v2 scalr_keyframes.lst).
+        kf = {} if helhest_keyframes is None else {"keyframes_file": helhest_keyframes}
 
         # HELHEST-only: the proprio auxiliary is DRIFT's compression target and
         # only HELHEST carries it, so only HelhestDistill takes this kwarg.
@@ -34,7 +38,7 @@ class RoboticsMergedDistill(ImPcDataset):
 
         kwargs["rootdir"] = os.path.join(rootdir, "HELHEST")  # Livox Mid-360 LiDAR
         self.helhest = HelhestDistill(
-            drift_val_exclusion=drift_val_exclusion, **kwargs
+            drift_val_exclusion=drift_val_exclusion, **kf, **kwargs
         )
 
         self.members = [self.rellis_os, self.rellis_vel, self.rough, self.helhest]
@@ -42,7 +46,7 @@ class RoboticsMergedDistill(ImPcDataset):
         if self.INCLUDE_HELHEST_V2:
             # Its own directory: the two HELHEST rigs never share a root.
             kwargs["rootdir"] = os.path.join(rootdir, "HELHEST_V2")  # Odin1
-            self.helhest_v2 = HelhestV2Distill(**kwargs)
+            self.helhest_v2 = HelhestV2Distill(**kf, **kwargs)
             self.members.append(self.helhest_v2)
 
         self._ends = np.cumsum([len(m) for m in self.members])

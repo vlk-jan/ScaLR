@@ -13,7 +13,7 @@
 # admit four. Mechanics smoke for the HELHEST v2 loader inside the merged
 # corpus; see configs/pretrain/WI_768_robotics_v2_smoke.yaml. The merged root
 # needs HELHEST_V2 -> a HELHEST v2 root carrying scalr_keyframes.lst
-# (scripts/write_helhest_v2_keyframes.py).
+# (scripts/write_scalr_keyframes.py).
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 # The uv environment (pyproject.toml + uv.lock, `uv sync --extra cuda`), as in
 # DRIFT: no modules, no user site. .h200_env is not used -- its activate names a

@@ -1,0 +1,29 @@
+#!/bin/bash
+#SBATCH --nodes=1
+#SBATCH --ntasks-per-node=1
+#SBATCH --time=3:00:00
+#SBATCH --error=slurm/out/measure_bound_v8_%j.err
+#SBATCH --output=slurm/out/measure_bound_v8_%j.out
+#SBATCH --partition=cpu
+#SBATCH --cpus-per-task=8
+#SBATCH --mem=64G
+# The uv environment (pyproject.toml + uv.lock; `uv sync --extra cuda`), as in
+# DRIFT. No modules and no user site.
+PY=./.venv/bin/python
+cd "$SLURM_SUBMIT_DIR" || exit 1
+# Best-constant bound of the v1.5 labels AS v8 SAMPLES THEM: through the
+# motion-gated scalr_keyframes.lst (73,806 frames, ~36.5k labelled) rather than
+# keyframes.lst (182,878, 67.1k labelled). The labels are the same files; what
+# changes is which frames a draw can land on, so the bound should match the
+# ungated 0.0196 [0.0154, 0.0241] (measure_bound_v15_11561034.out) within its
+# CI. If it does not, update constant_bound in WI_768_h200_v8_robotics_v2.yaml.
+# The alt arm is the ungated list on the same root: the paired reference.
+D=/mnt/personal/vlkjan6/setprop_v15
+R=/mnt/personal/vlkjan6/HELHEST_v1_5
+[ "$(readlink -f "$D/HELHEST")" = "$(readlink -f "$R")" ] || { echo "FATAL: $D/HELHEST does not point at $R"; exit 1; }
+[ -f "$R/scalr_keyframes.lst" ] || { echo "FATAL: $R/scalr_keyframes.lst missing (scripts/write_scalr_keyframes.py --base_list keyframes.lst)"; exit 1; }
+echo "gated list: $(grep -vc '^#' "$R/scalr_keyframes.lst") rows"
+$PY -u scripts/measure_proprio_bound.py --frames 2500 --config configs/pretrain/WI_768_h200_v8_robotics_v2.yaml \
+  --path_dataset "$D" --shipped_tag /setprop_v15 --alt_tag /setprop_v15 \
+  --shipped_name "V1_5 LABELS, GATED LIST (as v8 samples them)" --alt_name "V1_5 LABELS, SAME ROOT" \
+  --helhest_keyframes scalr_keyframes.lst

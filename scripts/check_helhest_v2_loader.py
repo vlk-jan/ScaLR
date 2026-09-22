@@ -8,6 +8,8 @@
   4. --overlay: the final pairs drawn on the cropped image, one per session.
   5. with --merged_root: point_backbone.ground_z puts every member's ground at
      one height, measured on what __getitem__ returns.
+  6. with --merged_root: dataloader.helhest_keyframes selects the gated lists
+     and point_backbone.max_pairs caps the pairs per frame.
 
 CPU only. Usage: python scripts/check_helhest_v2_loader.py [--merged_root DIR]
 """
@@ -110,6 +112,18 @@ if a.merged_root:
         LIST_DATASETS_DISTILL["robotics"](rootdir=a.merged_root, phase="train", ground_z=-0.29, **kw)
     except Exception as e:
         raise AssertionError(f"robotics + ground_z failed to build: {e}")
+
+# 6 ---------------------------------------------------------------------------
+if a.merged_root:
+    kw = dict(KW, max_pairs=4000)
+    m = LIST_DATASETS_DISTILL["robotics_v2"](rootdir=a.merged_root, phase="train", helhest_keyframes="scalr_keyframes.lst", **kw)
+    sizes = [len(x) for x in m.members]
+    assert m.helhest.keyframes_file == "scalr_keyframes.lst" and sizes[3] < 100000, sizes
+    caps = []
+    for i in np.random.default_rng(6).choice(len(m.helhest_v2), 6, replace=False):
+        o = m.helhest_v2[int(i)]; caps.append(len(o[2])); assert len(o[2]) == len(o[3]) and o[2].max() < o[0].shape[2]
+    print(f"[6] helhest_keyframes + max_pairs 4000: members {sizes}; v2 pairs/frame now {caps} (uncapped median ~7,200)")
+    assert max(caps) <= 4000
 
 # 4 ---------------------------------------------------------------------------
 if a.overlay:

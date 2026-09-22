@@ -49,6 +49,8 @@ def get_datasets(config, args):
         # Shift every dataset's ground onto one height; absent = off, which is
         # what every existing checkpoint saw. See ImPcDataset.height_shift.
         "ground_z": config["point_backbone"].get("ground_z"),
+        # Cap on point-pixel pairs per frame; absent = off. ImPcDataset.__getitem__.
+        "max_pairs": config["point_backbone"].get("max_pairs"),
         # ImPcDataset._check_aspect RAISES when im_size's aspect differs from
         # the camera's; this accepts the stretch deliberately.
         "allow_aspect_mismatch": getattr(args, "allow_aspect_mismatch", False),
@@ -73,6 +75,16 @@ def get_datasets(config, args):
     excl = (config.get("proprio_supervision") or {}).get("drift_val_exclusion")
     if args.dataset.lower() in ("helhest", "robotics", "robotics_v2"):
         kwargs["drift_val_exclusion"] = excl
+    # Which HELHEST keyframe list to read (dataloader.helhest_keyframes); absent
+    # = each loader's default. Only the HELHEST-bearing datasets take it.
+    kf = config["dataloader"].get("helhest_keyframes")
+    if kf is not None:
+        if args.dataset.lower() in ("robotics", "robotics_v2"):
+            kwargs["helhest_keyframes"] = kf
+        elif args.dataset.lower() in ("helhest", "helhest_v2"):
+            kwargs["keyframes_file"] = kf
+        else:
+            raise ValueError(f"dataloader.helhest_keyframes={kf!r} is set, but --dataset {args.dataset} has no HELHEST member.")
     elif excl not in (None, "none"):
         raise ValueError(
             f"proprio_supervision.drift_val_exclusion={excl!r} is set, but "

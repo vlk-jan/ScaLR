@@ -1,5 +1,6 @@
 # v8: the first full pretraining on the robotics_v2 corpus -- RELLIS-3D (two
-# lidars), ROUGH, HELHEST v1.5 (Livox) and HELHEST v2 (Odin1), 278,219 samples.
+# lidars), ROUGH, HELHEST v1.5 (Livox) and HELHEST v2 (Odin1), 169,147 samples
+# once HELHEST v1 is motion-gated (below).
 # From scratch, with the proprio auxiliary, on 3 H200s. Launcher:
 # slurm/pretraining_h200_v8_robotics_v2.batch. Mechanics proven by
 # WI_768_robotics_v2_smoke.yaml (job 11676729: 2,990 steps, loss 0.906 -> 0.795,
@@ -16,8 +17,24 @@
 #   constant_bound 0.0196    HELHEST v1.5 labels, the only labels in the corpus
 #   ground_z -0.29           both HELHEST rigs' base_link ground height
 #
+# BALANCE. The distillation loss is one mean over every point-pixel pair in the
+# batch, so a frame weighs its pair count, and the sensors set that: an Odin1
+# frame pairs ~7,100 points, a Livox frame ~1,300, a 360-degree Ouster ~1,800.
+# Measured on the ungated corpus, HELHEST v2 was 25 % of the frames and 61 %
+# of the loss, and HELHEST v1 listed every frame with the robot standing still
+# in 41 % of them. Two settings below address that:
+#   helhest_keyframes   both HELHEST members read the motion-gated list
+#                       (0.10 m or 10 deg between kept frames; v1 182,878 ->
+#                       73,806, v2 already gated at 68,314)
+#   max_pairs 4000      a frame contributes at most 4,000 random pairs
+# Resulting loss shares (rellis_os / rellis_vel / rough / v1 / v2):
+# ungated pooled 1.8/2.8/4.1/30.5/60.8 -> gated + capped ~3.3/4.8/6.5/34/51
+# (interpolated from the measured cap-2000 and cap-4000 scenarios). Frames:
+# 4.6/4.6/6.8/43.6/40.4.
+#
 # WHAT IS NEW AGAINST v6, the last run that completed:
-#   corpus        +68,314 HELHEST v2 keyframes (24.6 %); HELHEST v1 is v1.5
+#   corpus        +68,314 HELHEST v2 keyframes; HELHEST v1 is v1.5, motion-gated
+#   loss weight   max_pairs 4000 (v6: unbounded, set by the sensor)
 #   labels        v1.5, measured-cells gate, URDF wheels (v6's were mirrored)
 #   ground_z      every member's ground at one height (see below)
 #   im_size       camera-paired; v6 trained on a 1.25x-stretched camera
@@ -37,6 +54,11 @@ point_backbone:
   voxel_size: 0.1
   max_points: 20000
   layernorm: True
+  # At most this many point-pixel pairs per frame reach the distillation loss
+  # (random subset, redrawn per draw); the backbone still sees the whole cloud.
+  # Bounds the Odin1's ~7,100-pair frames at ~3x a Livox frame instead of ~5.5x.
+  # ImPcDataset.__getitem__.
+  max_pairs: 4000
   # z is a network input and the translation augmentation is xy-only, so without
   # this every member tells the backbone its mounting height: ground sits at
   # -1.07 m (RELLIS os1), -0.89 (RELLIS vel), -0.41 (ROUGH), -0.29 (HELHEST v1
@@ -60,10 +82,15 @@ dataloader:
   # batch_size must stay a multiple of the GPU count (distill.py divides it).
   batch_size: 12
   num_workers: 56
+  # Both HELHEST members read this list instead of their defaults (v1
+  # keyframes.lst = every map-bearing frame). Written into each root by
+  # scripts/write_scalr_keyframes.py; for v1.5 with --base_list keyframes.lst so
+  # DRIFT's map gate is kept.
+  helhest_keyframes: scalr_keyframes.lst
   # Matched to v6 in SAMPLES SEEN, not in epochs: v6 saw 25 x 183,056 = 4.58 M;
-  # 16 x 278,219 = 4.45 M. Epochs are not comparable across a corpus that grew
-  # by half, and 25 epochs here would be 7.0 M samples and ~6 days.
-  num_epochs: 16
+  # 26 x 169,147 = 4.40 M. Epochs are not comparable across a corpus whose
+  # composition changed this much.
+  num_epochs: 26
 
 optim:
   # Linear in the global batch, as every config here has been: 0.002 at 4
@@ -89,9 +116,11 @@ proprio_supervision:
   lr: 0.001
   huber_delta: 0.05
   # HELHEST v1.5 labels through setprop/HELHEST -> HELHEST_v1_5: BOUND 0.0196,
-  # 95 % CI [0.0154, 0.0241] (slurm/out/measure_bound_v15_11561034.out).
-  # HELHEST v2 has no labels; its frames reach the aux loss with an empty mask.
-  # Re-measure if the HELHEST symlink moves.
+  # 95 % CI [0.0154, 0.0241] (slurm/out/measure_bound_v15_11561034.out),
+  # measured on the ungated list. The gate keeps ~36.5k of the 67.1k labelled
+  # frames; slurm/measure_bound_v8.batch re-measures on the gated list and the
+  # number here is to be updated from its output. HELHEST v2 has no labels;
+  # its frames reach the aux loss with an empty mask.
   constant_bound: 0.0196
   depth: null
   # OFF, as in every run so far: the aux is supervised on all labelled frames,

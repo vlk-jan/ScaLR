@@ -20,7 +20,7 @@
 # and DRIFT arrays share it; a 4-GPU job stops everything else. To run on two,
 # change --gres AND the config's batch_size (8) and lr (0.004) together.
 #
-# WALL CLOCK. 16 epochs x 23,185 steps (278,219 samples / 12). DDP runs at the
+# WALL CLOCK. 26 epochs x 14,095 steps (169,147 samples / 12). DDP runs at the
 # pace of one GPU's 4 samples: v6 measured 0.98 steps/s on small Livox clouds
 # under torch 2.8, the robotics_v2 smoke 1.25 steps/s on one GPU with Odin
 # clouds in the mix. At 1.0 steps/s that is 103 h, at 1.25 it is 82 h. 130 h
@@ -29,9 +29,10 @@
 # --restart rather than starting over.
 #
 # BEFORE SUBMITTING
-#   - <path_dataset>/HELHEST_V2 must point at a HELHEST v2 root that carries
-#     scalr_keyframes.lst (scripts/write_helhest_v2_keyframes.py). The list is
-#     written INTO the root: a re-extraction of the root deletes it.
+#   - <path_dataset>/HELHEST_V2 and <path_dataset>/HELHEST must both carry
+#     scalr_keyframes.lst (scripts/write_scalr_keyframes.py; for v1.5 with
+#     --base_list keyframes.lst). The lists are written INTO the roots: a
+#     re-extraction of a root deletes its list.
 #   - <path_dataset>/HELHEST must still resolve to HELHEST_v1_5, or the
 #     config's constant_bound describes other labels.
 #   - `git submodule update --init && uv sync --extra cuda` on a fresh clone.
@@ -44,7 +45,9 @@ set -euo pipefail
 cd "${SLURM_SUBMIT_DIR:-.}"
 
 D=/mnt/personal/vlkjan6/setprop
-[ -f "$D/HELHEST_V2/scalr_keyframes.lst" ] || { echo "missing $D/HELHEST_V2/scalr_keyframes.lst"; exit 1; }
+for r in HELHEST HELHEST_V2; do
+  [ -f "$D/$r/scalr_keyframes.lst" ] || { echo "missing $D/$r/scalr_keyframes.lst"; exit 1; }
+done
 case "$(readlink -f "$D/HELHEST")" in
   */HELHEST_v1_5) ;;
   *) echo "$D/HELHEST resolves to $(readlink -f "$D/HELHEST"), not HELHEST_v1_5: constant_bound 0.0196 is a v1.5 number"; exit 1 ;;

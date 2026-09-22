@@ -49,6 +49,7 @@ ap.add_argument("--alt_tag", default="/setprop_framefix")
 ap.add_argument("--shipped_name", default="SHIPPED (mirrored)", help="label for the --path_dataset arm")
 ap.add_argument("--alt_name", default="FRAME-FIXED", help="label for the --alt_tag arm")
 ap.add_argument("--frames", type=int, default=2500)
+ap.add_argument("--helhest_keyframes", default=None, help="HELHEST keyframe list to sample from (default: the loader's keyframes.lst)")
 ap.add_argument("--seed", type=int, default=0)
 # This script measures the bound THROUGH the real __getitem__, so it hits
 # ImPcDataset._check_aspect, which now raises on an aspect mismatch. The
@@ -78,6 +79,8 @@ kwargs = dict(
     translation_range=(cfg.get("augmentations") or {}).get("translation_range", 0.0),
     allow_aspect_mismatch=not a.strict_aspect,
 )
+if a.helhest_keyframes:
+    kwargs["helhest_keyframes"] = a.helhest_keyframes
 ds = LIST_DATASETS_DISTILL["robotics"](phase="train", **kwargs)
 print(f"dataset: {len(ds)} samples")
 

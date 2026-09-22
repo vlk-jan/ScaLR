@@ -283,8 +283,12 @@ class HelhestDistill(ImPcDataset):
     # in __init__ if height normalisation is on.
     GROUND_Z = -0.29
 
-    def __init__(self, drift_val_exclusion=None, **kwargs):
+    def __init__(self, drift_val_exclusion=None, keyframes_file="keyframes.lst", **kwargs):
         super().__init__(**kwargs)
+        # keyframes.lst is DRIFT's list: every map-bearing frame, 41 % of them
+        # stationary. scalr_keyframes.lst (scripts/write_scalr_keyframes.py) is
+        # the motion-gated one; v8 selects it through dataloader.helhest_keyframes.
+        self.keyframes_file = keyframes_file
 
         # For normalizing intensities
         self.mean_int = MEAN_INT
@@ -304,10 +308,7 @@ class HelhestDistill(ImPcDataset):
 
         # Load data
         self.list_keyframes = np.loadtxt(
-            os.path.join(
-                self.rootdir,
-                f"keyframes.lst",
-            ),
+            os.path.join(self.rootdir, self.keyframes_file),
             dtype=str,
         )
 
