@@ -8,6 +8,7 @@
 #SBATCH --partition=h200extralong
 #SBATCH --cpus-per-task=62
 #SBATCH --gres=gpu:3
+#SBATCH --exclude=h01
 #SBATCH --mem=512G
 #SBATCH --mail-user=vlkjan6@fel.cvut.cz
 #SBATCH --mail-type=FAIL
@@ -40,6 +41,14 @@
 #         --merged_root /mnt/personal/vlkjan6/setprop        (CPU, ~5 min)
 #
 # From scratch by design, as v5 and v6 were: no --warm_start_ckpt.
+#
+# --exclude=h01: job 11684403 died there at step 190 (2026-09-23) with
+# "CUDA error: Invalid access of peer GPU memory over nvlink or a hardware
+# error" in the NCCL watchdog, after 190 healthy steps at 0.98 steps/s. Every
+# completed multi-GPU run so far was on h03 (v6, 11415503), the smokes on h02,
+# and h01 had diagnostic jobs run against it in August 2026. If the same error
+# appears on another node, the next step is NCCL_P2P_DISABLE=1, not another
+# exclude.
 
 set -euo pipefail
 cd "${SLURM_SUBMIT_DIR:-.}"
