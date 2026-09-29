@@ -24,9 +24,15 @@ keeps that exclusion. transforms.npy is what both rigs gate on: on v2 it is the
 Fixposition pose, on v1 the live wheel-IMU odometry, which drifts but does not
 stand still while the robot moves.
 
+The image extension comes from manifest.json (`images.extension`, jpg since
+HELHEST_v2_1); a root without the key, or without a manifest (v1.5), is PNG.
+Every listed file is checked to exist, so a root whose manifest says jpg but
+whose images are still PNG fails here instead of yielding a shorter list.
+
 The file is written atomically and only adds to the root.
 """
 import argparse
+import json
 import os
 import tempfile
 
@@ -40,6 +46,12 @@ ap.add_argument("--min_dist", type=float, default=0.10, help="metres since the l
 ap.add_argument("--min_yaw", type=float, default=10.0, help="degrees since the last kept frame")
 ap.add_argument("--max_tilt", type=float, default=60.0, help="degrees off level")
 a = ap.parse_args()
+
+ext = "png"
+mpath = os.path.join(a.root, "manifest.json")
+if os.path.exists(mpath):
+    with open(mpath) as f:
+        ext = str(json.load(f).get("images", {}).get("extension", ext)).lstrip(".")
 
 scenes = sorted(d for d in os.listdir(a.root) if len(d) == 4 and d.isdigit())
 allowed = None
@@ -67,14 +79,13 @@ for sc in scenes:
             or np.linalg.norm(xyz[i] - xyz[last]) >= a.min_dist
             or abs(yaw[i] - yaw[last]) >= np.radians(a.min_yaw)
         ):
-            rows.append(f"{sc}/clouds/{i:05d}.npy {sc}/images/{i:05d}.png")
+            rows.append(f"{sc}/clouds/{i:05d}.npy {sc}/images/{i:05d}.{ext}")
             last = i
             kept += 1
     report.append((sc, n, int((~level).sum()), kept))
 
-for r in rows[:: max(1, len(rows) // 200)]:  # spot-check that what is listed exists
-    for rel in r.split():
-        assert os.path.exists(os.path.join(a.root, rel)), f"listed but missing: {rel}"
+missing = [rel for r in rows for rel in r.split() if not os.path.exists(os.path.join(a.root, rel))]
+assert not missing, f"{len(missing)} listed files missing (manifest says images are .{ext}), first: {missing[0]}"
 
 header = (
     f"# HELHEST keyframes for ScaLR (scripts/write_scalr_keyframes.py)\n"
