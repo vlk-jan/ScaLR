@@ -30,9 +30,9 @@ Every listed file is checked to exist, so a root whose manifest says jpg but
 whose images are still PNG fails here instead of yielding a shorter list.
 
 --scenes / --exclude restrict the scene set, as comma-separated ids or ranges
-(`0000-0011`, `0012-0017`). HELHEST_v2_1 holds scenes 0012-0017 out for
-validation, so a training list for it is written with --exclude 0012-0017; the
-header records the selection.
+(`0000-0011`, `0012-0017`). HELHEST_v2_2 (and v2_1) hold scenes 0012-0017 out
+for validation, so a training list is written with --exclude 0012-0017; the
+header records the selection. On v2_2 that gives 37,888 of 109,681 frames.
 
 The file is written atomically and only adds to the root.
 """
@@ -44,7 +44,7 @@ import tempfile
 import numpy as np
 
 ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-ap.add_argument("--root", default="/mnt/personal/vlkjan6/HELHEST_v2_1")
+ap.add_argument("--root", default="/mnt/personal/vlkjan6/HELHEST_v2_2")
 ap.add_argument("--out", default="scalr_keyframes.lst", help="file name inside --root")
 ap.add_argument("--base_list", default=None, help="only consider frames listed in this file inside --root (e.g. keyframes.lst)")
 ap.add_argument("--scenes", default=None, help="only these scenes: ids or ranges, e.g. 0000-0011,0020")
