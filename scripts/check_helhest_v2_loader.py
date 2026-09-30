@@ -51,7 +51,13 @@ except ImportError:
     print("[1] cv2 not installed, skipped")
 
 # 2 ---------------------------------------------------------------------------
-ds = LIST_DATASETS_DISTILL["helhest_v2"](rootdir=a.root, phase="train", **KW)
+if os.path.isdir(os.path.join(a.root, "0000", "proprio_labels")):
+    try:
+        LIST_DATASETS_DISTILL["helhest_v2"](rootdir=a.root, phase="train", **KW)
+        raise AssertionError("a root with proprio_labels/ must be refused unless proprio_labels='ignore'")
+    except NotImplementedError:
+        print("[2] proprio_labels/ present: refused by default, as it should be")
+ds = LIST_DATASETS_DISTILL["helhest_v2"](rootdir=a.root, phase="train", proprio_labels="ignore", **KW)
 print(f"[2] helhest_v2: {len(ds)} keyframes")
 rng = np.random.default_rng(1)
 idx = rng.choice(len(ds), a.frames, replace=False)
@@ -79,6 +85,7 @@ batch = CollateDistillation()(items)
 print("    collated:", {k: (tuple(v.shape) if hasattr(v, "shape") else f"list[{len(v)}]") for k, v in batch.items()})
 
 if a.merged_root:
+    KW["helhest_v2_proprio_labels"] = "ignore"
     m = LIST_DATASETS_DISTILL["robotics_v2"](rootdir=a.merged_root, phase="train", **KW)
     sizes = [len(x) for x in m.members]
     print(f"    robotics_v2: {len(m)} samples, members {sizes} -> v2 share {100*sizes[-1]/len(m):.1f} %")

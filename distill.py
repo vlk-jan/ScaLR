@@ -91,6 +91,18 @@ def get_datasets(config, args):
             f"--dataset {args.dataset} carries no proprio labels for it to "
             f"withhold."
         )
+    # What the v2 loader does with a proprio label tree in its root
+    # (proprio_supervision.helhest_v2_labels: refuse | ignore); absent = refuse.
+    # Lives next to constant_bound because it says which labels the bound
+    # describes. See HelhestV2Distill.PROPRIO_LABEL_MODES.
+    v2pl = (config.get("proprio_supervision") or {}).get("helhest_v2_labels")
+    if v2pl is not None:
+        if args.dataset.lower() == "robotics_v2":
+            kwargs["helhest_v2_proprio_labels"] = v2pl
+        elif args.dataset.lower() == "helhest_v2":
+            kwargs["proprio_labels"] = v2pl
+        else:
+            raise ValueError(f"proprio_supervision.helhest_v2_labels={v2pl!r} is set, but --dataset {args.dataset} has no HELHEST v2 member.")
 
     # Train dataset
     train_dataset = DATASET(phase="train", **kwargs)

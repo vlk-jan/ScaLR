@@ -147,12 +147,25 @@ def project_equidistant(p_cam, K, D):
 class HelhestV2Distill(ImPcDataset):
     GROUND_Z = -0.29  # base_link, same as v1 (ImPcDataset.height_shift)
 
-    def __init__(self, keyframes_file=KEYFRAMES_FILE, crop_rows=CROP_ROWS, **kwargs):
+    # What to do with a <scene>/proprio_labels tree in the root. "refuse" (the
+    # default) raises; "ignore" feeds every v2 frame to the aux loss with an
+    # empty mask, exactly as v8 did on a label-less root. Since HELHEST_v2_2 the
+    # roots carry DRIFT's labels for this rig, and the user's decision of
+    # 2026-09-30 is not to train the aux head on them: they are 5-10x v1.5's
+    # (0.07 m on cobbles -- the accepted ~2 deg receiver pitch and the wheel
+    # radius are in them) under a constant_bound measured on v1.5. Reading them
+    # is v1's load_proprio_labels, format for format, once that changes.
+    PROPRIO_LABEL_MODES = ("refuse", "ignore")
+
+    def __init__(self, keyframes_file=KEYFRAMES_FILE, crop_rows=CROP_ROWS, proprio_labels="refuse", **kwargs):
         super().__init__(**kwargs)
 
         self.mean_int = MEAN_INT
         self.std_int = STD_INT
         check_root(self.rootdir)
+        if proprio_labels not in self.PROPRIO_LABEL_MODES:
+            raise ValueError(f"proprio_labels={proprio_labels!r}; expected one of {self.PROPRIO_LABEL_MODES}")
+        self.proprio_labels = proprio_labels
 
         lst = os.path.join(self.rootdir, keyframes_file)
         if not os.path.exists(lst):
@@ -162,14 +175,15 @@ class HelhestV2Distill(ImPcDataset):
             )
         self.list_keyframes = np.loadtxt(lst, dtype=str)
 
-        # No proprio labels exist for this rig (the wheel geometry they need is
-        # unmeasured). If they appear, reading them needs wiring here first --
-        # ignoring a label tree silently is how an aux head trains on nothing.
+        # Ignoring a label tree silently is how an aux head trains on nothing,
+        # so a root that carries one is refused unless the config says
+        # otherwise (proprio_supervision.helhest_v2_labels: ignore).
         scene0 = self.list_keyframes[0][0].split("/")[0]
-        if os.path.isdir(os.path.join(self.rootdir, scene0, "proprio_labels")):
+        if self.proprio_labels == "refuse" and os.path.isdir(os.path.join(self.rootdir, scene0, "proprio_labels")):
             raise NotImplementedError(
-                f"{self.rootdir}/{scene0}/proprio_labels exists, but HelhestV2Distill "
-                f"does not read proprio labels yet."
+                f"{self.rootdir}/{scene0}/proprio_labels exists, but HelhestV2Distill does not "
+                f"read proprio labels. Set proprio_supervision.helhest_v2_labels: ignore to train "
+                f"without them (v2 frames then reach the aux loss with an empty mask, as in v8)."
             )
 
         self.crop_rows = tuple(crop_rows) if crop_rows is not None else None

@@ -55,6 +55,11 @@ proprio_supervision:
   hidden_dim: 128
   lr: 0.001
   huber_delta: 0.05
-  # HELHEST v1.5 labels (setprop/HELHEST -> HELHEST_v1_5); v2 carries none.
+  # HELHEST v1.5 labels (setprop/HELHEST -> HELHEST_v1_5); the bound is theirs.
   constant_bound: 0.0196
   depth: 12
+  # HELHEST_v2_2 (setprop/HELHEST_V2) ships DRIFT's labels for the Odin rig;
+  # they are not trained on (user, 2026-09-30): v2 frames reach the aux loss
+  # with an empty mask, as on the label-less beta root. Without this key the
+  # v2 loader refuses the root.
+  helhest_v2_labels: ignore
