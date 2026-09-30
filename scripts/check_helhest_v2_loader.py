@@ -24,7 +24,7 @@ from datasets import LIST_DATASETS_DISTILL, CollateDistillation  # noqa: E402
 from datasets.helhest_v2_for_scalr import project_equidistant  # noqa: E402
 
 ap = argparse.ArgumentParser()
-ap.add_argument("--root", default="/mnt/personal/vlkjan6/HELHEST_v2_beta")
+ap.add_argument("--root", default="/mnt/personal/vlkjan6/HELHEST_v2_1")
 ap.add_argument("--merged_root", default=None, help="also build --dataset robotics_v2 from this root")
 ap.add_argument("--frames", type=int, default=60)
 ap.add_argument("--overlay", default=None, help="directory to write overlay JPEGs into")

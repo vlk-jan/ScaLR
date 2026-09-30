@@ -29,6 +29,11 @@ HELHEST_v2_1); a root without the key, or without a manifest (v1.5), is PNG.
 Every listed file is checked to exist, so a root whose manifest says jpg but
 whose images are still PNG fails here instead of yielding a shorter list.
 
+--scenes / --exclude restrict the scene set, as comma-separated ids or ranges
+(`0000-0011`, `0012-0017`). HELHEST_v2_1 holds scenes 0012-0017 out for
+validation, so a training list for it is written with --exclude 0012-0017; the
+header records the selection.
+
 The file is written atomically and only adds to the root.
 """
 import argparse
@@ -39,9 +44,11 @@ import tempfile
 import numpy as np
 
 ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-ap.add_argument("--root", default="/mnt/personal/vlkjan6/HELHEST_v2_beta")
+ap.add_argument("--root", default="/mnt/personal/vlkjan6/HELHEST_v2_1")
 ap.add_argument("--out", default="scalr_keyframes.lst", help="file name inside --root")
 ap.add_argument("--base_list", default=None, help="only consider frames listed in this file inside --root (e.g. keyframes.lst)")
+ap.add_argument("--scenes", default=None, help="only these scenes: ids or ranges, e.g. 0000-0011,0020")
+ap.add_argument("--exclude", default=None, help="drop these scenes, same syntax (v2_1: 0012-0017 are held out)")
 ap.add_argument("--min_dist", type=float, default=0.10, help="metres since the last kept frame")
 ap.add_argument("--min_yaw", type=float, default=10.0, help="degrees since the last kept frame")
 ap.add_argument("--max_tilt", type=float, default=60.0, help="degrees off level")
@@ -53,7 +60,24 @@ if os.path.exists(mpath):
     with open(mpath) as f:
         ext = str(json.load(f).get("images", {}).get("extension", ext)).lstrip(".")
 
+def scene_set(spec):
+    ids = set()
+    for part in spec.split(","):
+        lo, _, hi = part.strip().partition("-")
+        ids.update(f"{i:04d}" for i in range(int(lo), int(hi or lo) + 1))
+    return ids
+
+
 scenes = sorted(d for d in os.listdir(a.root) if len(d) == 4 and d.isdigit())
+if a.scenes:
+    want = scene_set(a.scenes)
+    assert want <= set(scenes), f"--scenes names scenes not in {a.root}: {sorted(want - set(scenes))}"
+    scenes = [sc for sc in scenes if sc in want]
+if a.exclude:
+    drop = scene_set(a.exclude)
+    assert drop <= set(scenes), f"--exclude names scenes not in the selection: {sorted(drop - set(scenes))}"
+    scenes = [sc for sc in scenes if sc not in drop]
+assert scenes, "no scenes left after --scenes/--exclude"
 allowed = None
 if a.base_list:
     base = np.loadtxt(os.path.join(a.root, a.base_list), dtype=str, ndmin=2)[:, 0]
@@ -90,7 +114,8 @@ assert not missing, f"{len(missing)} listed files missing (manifest says images 
 header = (
     f"# HELHEST keyframes for ScaLR (scripts/write_scalr_keyframes.py)\n"
     f"# min_dist {a.min_dist} m, min_yaw {a.min_yaw} deg, max_tilt {a.max_tilt} deg"
-    + (f", within {a.base_list}" if a.base_list else "") + "; "
+    + (f", within {a.base_list}" if a.base_list else "")
+    + (f", scenes {a.scenes}" if a.scenes else "") + (f", excluding {a.exclude}" if a.exclude else "") + "; "
     f"{len(rows)} of {sum(r[1] for r in report)} frames\n"
 )
 fd, tmp = tempfile.mkstemp(dir=a.root, prefix=".scalr_keyframes.")
