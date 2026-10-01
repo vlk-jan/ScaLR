@@ -1,0 +1,95 @@
+#!/bin/bash
+
+#SBATCH --nodes=1
+#SBATCH --ntasks-per-node=1
+#SBATCH --time=130:00:00
+#SBATCH --error=slurm/out/v9_robotics_v2_err.out
+#SBATCH --output=slurm/out/v9_robotics_v2_std.out
+#SBATCH --partition=h200extralong
+#SBATCH --cpus-per-task=62
+#SBATCH --gres=gpu:3
+#SBATCH --exclude=h01
+#SBATCH --mem=512G
+#SBATCH --mail-user=vlkjan6@fel.cvut.cz
+#SBATCH --mail-type=FAIL
+
+# v9: full from-scratch pretraining on the robotics_v2 corpus with HELHEST v2.3
+# (deskewed Odin1 clouds) as the v2 member, proprio auxiliary on. Rationale and
+# every rig-specific constant: configs/pretrain/WI_768_h200_v9_robotics_v2.yaml.
+#
+# From scratch, as v5, v6 and v8 were: no --warm_start_ckpt. v8's weights are
+# not a starting point here -- they were fitted on the beta root, whose scenes
+# are 29 % of v2.0 and none of v2.3's vegetation (user's decision, 2026-10-01).
+#
+# GPUS. Three, 4 samples each. The account's quota is 6 across all jobs and the
+# dataset-side runs share it (driven_similarity is one A100 with a 10 h limit).
+# To run on two, change --gres AND the config's batch_size (8) and lr (0.004).
+#
+# WALL CLOCK. 32 epochs x ~11,570 steps (~138,800 samples / 12) = ~370,000
+# steps. v8 measured 0.98 steps/s on this corpus on 3 H200s (366,470 steps in
+# 4 d 07:43); v9's clouds are the same Odin clouds with a smaller share of the
+# frames, so 0.98-1.1 steps/s gives 93-105 h. 130 h covers the slow case;
+# h200long's 72 h ceiling does not. distill.py keeps ckpt_last.pth, so a job
+# that dies resumes with --restart rather than starting over.
+#
+# BEFORE SUBMITTING
+#   - $D/HELHEST_V2 must resolve to HELHEST_v2_3 and that root must be FROZEN
+#     (both checked below). A root still being written changes under the job:
+#     v2.3's labels and driven_similarity land after the clouds do.
+#   - both HELHEST roots must carry scalr_keyframes.lst
+#     (scripts/write_scalr_keyframes.py; v1.5 with --base_list keyframes.lst,
+#     v2.3 with --exclude 0012-0017). The lists live INSIDE the roots: a
+#     re-extraction of a root deletes its list.
+#   - $D/HELHEST must still resolve to HELHEST_v1_5, or constant_bound 0.0188
+#     describes other labels.
+#   - `git submodule update --init && uv sync --extra cuda` on a fresh clone.
+#   - .venv/bin/python scripts/check_helhest_v2_loader.py \
+#         --merged_root /mnt/personal/vlkjan6/setprop        (CPU, ~5 min)
+#   - the 40-minute smoke on one GPU first:
+#         sbatch slurm/pretraining_robotics_v2_smoke.batch
+#
+# --exclude=h01: job 11684403 died there at step 190 (2026-09-23) with
+# "CUDA error: Invalid access of peer GPU memory over nvlink or a hardware
+# error" in the NCCL watchdog. v6 and v8 both completed on h03. If the same
+# error appears on another node, the next step is NCCL_P2P_DISABLE=1, not
+# another exclude.
+
+set -euo pipefail
+cd "${SLURM_SUBMIT_DIR:-.}"
+
+D=/mnt/personal/vlkjan6/setprop
+for r in HELHEST HELHEST_V2; do
+  [ -f "$D/$r/scalr_keyframes.lst" ] || { echo "missing $D/$r/scalr_keyframes.lst"; exit 1; }
+done
+case "$(readlink -f "$D/HELHEST")" in
+  */HELHEST_v1_5) ;;
+  *) echo "$D/HELHEST resolves to $(readlink -f "$D/HELHEST"), not HELHEST_v1_5: constant_bound 0.0188 is a v1.5 number"; exit 1 ;;
+esac
+case "$(readlink -f "$D/HELHEST_V2")" in
+  */HELHEST_v2_3) ;;
+  *) echo "$D/HELHEST_V2 resolves to $(readlink -f "$D/HELHEST_V2"), not HELHEST_v2_3"; exit 1 ;;
+esac
+# The v2.3 build writes FROZEN only after its labels and driven_similarity jobs.
+[ -f "$D/HELHEST_V2/FROZEN" ] || { echo "$D/HELHEST_V2 is not frozen yet"; exit 1; }
+# The held-out Temesvar session must not be in the list this run trains on.
+if grep -qE '^001[2-7]/' "$D/HELHEST_V2/scalr_keyframes.lst"; then
+  echo "$D/HELHEST_V2/scalr_keyframes.lst lists held-out scenes 0012-0017"; exit 1
+fi
+
+# Fragmentation guard, as in v6 and v8: a multi-day run dies at hour 40, not at
+# step 1.
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+
+# The uv environment (pyproject.toml + uv.lock; `uv sync --extra cuda`), as in
+# DRIFT. No modules and no user site.
+PY=./.venv/bin/python
+echo "host $(hostname)  commit $(git rev-parse --short HEAD)  WaffleIron $(git -C WaffleIron rev-parse --short HEAD)"
+echo "v2 root $(readlink -f "$D/HELHEST_V2"), $(grep -cv '^#' "$D/HELHEST_V2/scalr_keyframes.lst") keyframes"
+echo "v1 root $(readlink -f "$D/HELHEST"), $(grep -cv '^#' "$D/HELHEST/scalr_keyframes.lst") keyframes"
+$PY -c 'import sys, torch; print(sys.executable, torch.__version__, "gpus", torch.cuda.device_count())'
+nvidia-smi -L
+
+$PY distill.py --config configs/pretrain/WI_768_h200_v9_robotics_v2.yaml \
+  --log_path logs/pretraining/full_v9_robotics_v2 \
+  --dataset robotics_v2 --path_dataset "$D" \
+  --multiprocessing-distributed --bf16

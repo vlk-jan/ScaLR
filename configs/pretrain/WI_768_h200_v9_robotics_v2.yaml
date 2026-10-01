@@ -1,0 +1,147 @@
+# v9: the robotics_v2 corpus with HELHEST v2.3 -- the first full pretraining on
+# real Odin1 terrain. RELLIS-3D (two lidars), ROUGH, HELHEST v1.5 (Livox) and
+# HELHEST v2.3 (Odin1), motion-gated: 7,800 + 7,793 + 11,434 + 73,806 + ~38,000
+# = ~138,800 samples. Launcher: slurm/pretraining_h200_v9_robotics_v2.batch.
+#
+# v9 IS NOT AN A/B AGAINST v8. v8 (job 11689928, completed 2026-09-28, 4 d 07:43
+# on 3 H200s, loss 0.416) read HELHEST_v2_beta: 26 scenes of Stromovka with no
+# vegetation, 68,314 keyframes, of which v2.0 later reproduced 29 %. That root
+# was deleted on 2026-09-30 (its keyframe list is archived under
+# logs/pretraining/full_v8_robotics_v2/corpus_record/). The v2 member here is a
+# different 18 bags -- Stromovka, Lipnik and two Temesvar sessions, mostly
+# vegetation -- so the corpus changed in content as well as in size, and v9 vs
+# v8 reads as one difference only in the settings below, not in the data.
+#
+# WHAT HELHEST v2.3 IS, against v2.2 (= the same 18 bags re-extracted):
+#   - every sweep is DESKEWED onto data_ts = (image stamp + cloud stamp) / 2,
+#     which is the sweep start and the camera exposure to ~1 ms, using
+#     /odin1/odometry plus the 400 Hz Odin1 gyro inside the sweep. v2.2's
+#     time_align moved data_ts 27-52 ms past the stamp and left the sweep raw;
+#     that is the 55-80 px (full-res) lateral lag the 2026-09-30 projection
+#     audit measured on turns past 1 rad/s, 0.7-0.8 % of keyframes. At the p90
+#     yaw rate (0.2 rad/s) the same error was ~5 px full-res = 1.2 px at
+#     [240, 384], so this buys correctness, not a metric.
+#   - the pose source is the Odin1's own odometry, not the Fixposition, so
+#     scenes the Fixposition did not cover gain frames and NO frame index
+#     transfers from v2.2. The keyframe list is therefore v2.3's own.
+#   - calibration is unchanged: T_cam_to_base.txt, camera_info.yaml and
+#     tf_pins.txt are byte-identical to v2.2 per scene, so ground_z and the
+#     fisheye model below are the same numbers.
+# Checked on the finished scenes before this file was written: the loader passes
+# unchanged, and the intensity constants in datasets/helhest_v2_for_scalr.py
+# (120.839 / 46.277) still describe what the model is fed -- v2.3/0006 reads
+# 154.9 / 17.2 against v2.2/0006's 155.2 / 16.6, i.e. the deskew does not move
+# the intensity scale.
+#
+# Every rig-specific setting here belongs to a named member, as in v8:
+#   im_size [240, 384]       aspect 1.600 = RELLIS and ROUGH 1920x1200, HELHEST
+#                            v1 1280x800, HELHEST v2 cropped to 1600x1000 by its
+#                            own loader (datasets/helhest_v2_for_scalr.py)
+#   constant_bound 0.0188    HELHEST v1.5 labels, the only labels trained on
+#   ground_z -0.29           both HELHEST rigs' base_link ground height
+#
+# BALANCE, unchanged from v8 and for the same reason. The distillation loss is
+# one mean over the point-pixel pairs in the batch, so a frame weighs its pair
+# count: an Odin1 frame pairs 11-17k points, a Livox frame ~1,300, a 360-degree
+# Ouster ~1,800. max_pairs 4000 caps every v2 frame and leaves the others
+# untouched, which holds the v2 loss share near 51 % although its FRAME share
+# falls from v8's 40 % to 27 % (its list shrank 68,314 -> ~38,000 while v1.5
+# stayed at 73,806). Shares of the pairs that reach the loss, estimated from the
+# per-sensor pair counts (rellis_os / rellis_vel / rough / v1 / v2):
+# ~4.7 / 4.7 / 7.0 / 32.4 / 51.2; frames 5.6 / 5.6 / 8.2 / 53.2 / 27.4.
+
+point_backbone:
+  size_input: 5
+  input_features: ["intensity", "xyz", "radius"]
+  nb_channels: 768
+  nb_class: 1280 # must match the ViT feature size
+  depth: 36
+  dim_proj: [2, 1, 0]
+  grid_shape: [[256, 256], [256, 32], [256, 32]]
+  fov: [[-64, -64, -8], [64, 64, 8]]
+  num_neighbors: 16
+  voxel_size: 0.1
+  max_points: 20000
+  layernorm: True
+  # At most this many point-pixel pairs per frame reach the distillation loss
+  # (random subset, redrawn per draw); the backbone still sees the whole cloud.
+  # ImPcDataset.__getitem__.
+  max_pairs: 4000
+  # z is a network input and the translation augmentation is xy-only, so without
+  # this every member tells the backbone its mounting height: ground sits at
+  # -1.07 m (RELLIS os1), -0.89 (RELLIS vel), -0.41 (ROUGH), -0.29 (HELHEST v1
+  # and v2). Each member is shifted by a per-dataset constant onto -0.29, which
+  # leaves HELHEST exactly where DRIFT reads it. ImPcDataset.height_shift.
+  ground_z: -0.29
+
+image_backbone:
+  images_encoder: "dinov3_vit_huge_p16"
+  feat: "x"
+  im_size: [240, 384]
+
+dataloader:
+  # 4 per GPU on 3 GPUs, as validated for v8 (the H200 sweep held b4 at 89 GB
+  # and lost b8; the robotics_v2 smoke held 4/GPU for 2,990 steps with Odin
+  # clouds in the mix). Three GPUs rather than four because the account's quota
+  # is 6 and the dataset-side jobs share it.
+  #
+  # ON 2 GPUS: batch_size 8, lr 0.004, --gres=gpu:2, and ~1.5x the wall clock.
+  # batch_size must stay a multiple of the GPU count (distill.py divides it).
+  batch_size: 12
+  num_workers: 56
+  # Both HELHEST members read this list instead of their defaults (v1
+  # keyframes.lst = every map-bearing frame; v2 ships no list at all). Written
+  # into each root by scripts/write_scalr_keyframes.py -- for v1.5 with
+  # --base_list keyframes.lst so DRIFT's map gate is kept, for v2.3 with
+  # --exclude 0012-0017 so the held-out Temesvar session of 2026-09-29 stays
+  # out of pretraining as well as out of DRIFT's training.
+  helhest_keyframes: scalr_keyframes.lst
+  # Matched to v8 and v6 in SAMPLES SEEN, not in epochs: v6 saw 25 x 183,056 =
+  # 4.58 M, v8 26 x 169,147 = 4.40 M, this is 32 x ~138,800 = ~4.44 M. Epochs
+  # are not comparable across a corpus whose composition changed this much.
+  num_epochs: 32
+
+optim:
+  # Linear in the global batch, as every config here has been: 0.002 at 4
+  # (WI_768_pretrain), 0.008 at 16 (h200, v4-v7) -> 0.006 at 12.
+  lr: 0.006
+  weight_decay: 0.03
+  # v6's 1500 steps at batch 16 = 24,000 samples = 2,000 steps at batch 12.
+  iter_warmup: 2000
+  min_lr: 0.00001
+
+loss:
+  type: "l2"
+  collapse_weight: 0.0
+  collapse_margin: 0.5
+
+augmentations:
+  translation_range: 10.0
+
+proprio_supervision:
+  enabled: True
+  weight: 2.0
+  hidden_dim: 128
+  lr: 0.001
+  huber_delta: 0.05
+  # HELHEST v1.5 labels through setprop/HELHEST -> HELHEST_v1_5. BOUND 0.0188,
+  # 95 % CI [0.0154, 0.0229], measured on the gated list as this run samples it
+  # (slurm/measure_bound_v8.batch, job 11684404, 866 frames, 22.8 labelled
+  # points/frame); the ungated measurement was 0.0196, CI [0.0154, 0.0241]
+  # (slurm/out/measure_bound_v15_11561034.out). Same labels, same list as v8.
+  constant_bound: 0.0188
+  depth: null
+  # HELHEST v2.3 ships DRIFT's labels for the Odin rig in every scene, and they
+  # are NOT trained on (user, 2026-09-30): they are 5-10x v1.5's (median
+  # compression 0.073 m on cobbles, 0.113 Lipnik, 0.153 Temesvar against v1.5's
+  # 0.015), carrying the accepted ~2 deg receiver pitch and the wheel radius,
+  # under a constant_bound measured on v1.5. "ignore" sends v2 frames to the aux
+  # loss with an empty mask, exactly as v8 did on the label-less beta root.
+  # Without this key the v2 loader refuses a root that has a label tree.
+  helhest_v2_labels: ignore
+  # OFF, as in every run so far: the aux is supervised on all labelled frames,
+  # including the ones DRIFT validates on (datasets/helhest_for_scalr.py,
+  # DRIFT_N_FOLDS block). "scene" withholds DRIFT's scene-fold val scenes, which
+  # is 42 % of the labels, and the bound above would need re-measuring on what
+  # is left. A decision about how this backbone will be judged, not a default.
+  drift_val_exclusion: null
