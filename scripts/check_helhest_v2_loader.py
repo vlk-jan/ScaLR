@@ -61,11 +61,17 @@ ds = LIST_DATASETS_DISTILL["helhest_v2"](rootdir=a.root, phase="train", proprio_
 print(f"[2] helhest_v2: {len(ds)} keyframes")
 rng = np.random.default_rng(1)
 idx = rng.choice(len(ds), a.frames, replace=False)
-npts, npair, frac_kept = [], [], []
+npts, npair, frac_kept, empty = [], [], [], []
 for i in idx:
     raw = np.load(os.path.join(a.root, ds.list_keyframes[i][0]))
     pc = ds.load_pc(i)
     pc2, ims, px, pp = ds.map_pc_to_image(pc, i)
+    # A sensor buried in vegetation (v2 0005, 0010) returns almost nothing past
+    # the 0.5 m cut: 0.4 % of v2.2/v2.3 keyframes pair no point. __getitem__
+    # raises on those and redraws another frame, so they cost nothing; counted
+    # here and bounded below.
+    if len(pp) == 0:
+        empty.append(ds.list_keyframes[i][0]); continue
     assert pc2 is pc and len(ims) == 1 and ims[0].shape == (1000, 1600, 3), ims[0].shape
     assert px.shape == (len(pp), 3) and (px[:, 0] == 0).all()
     assert px[:, 1].min() >= 0 and px[:, 1].max() < 1000 and px[:, 2].min() >= 0 and px[:, 2].max() < 1600
@@ -73,6 +79,8 @@ for i in idx:
     npts.append(len(pc)); npair.append(len(pp)); frac_kept.append(len(pc) / len(raw))
 print(f"    points/frame after cleaning: median {np.median(npts):.0f} ({100*np.median(frac_kept):.0f} % of the file); "
       f"pairs/frame: median {np.median(npair):.0f}, min {np.min(npair)}; paired share {100*np.sum(npair)/np.sum(npts):.0f} %")
+print(f"    frames pairing no point: {len(empty)} of {len(idx)}" + (f" ({', '.join(empty)})" if empty else ""))
+assert len(empty) <= max(1, 0.03 * len(idx)), "more than 3 % of the sampled keyframes pair no point"
 
 # 3 ---------------------------------------------------------------------------
 items = [ds[int(i)] for i in idx[:4]]
@@ -99,22 +107,50 @@ if a.merged_root:
 
 # 5 ---------------------------------------------------------------------------
 if a.merged_root:
-    def fed_ground(member, n=24):
+    # Per frame: the mode of z over the 1.5-5 m ring. RELLIS vel is bimodal --
+    # about half its frames see tall grass, not ground, as the ring's dominant
+    # surface (~-0.15 against ~-0.9) -- so a median over 24 frames flips between
+    # the two clusters from draw to draw. Two assertions instead: the shift
+    # itself, paired frame by frame, and the level of the GROUND cluster: the
+    # per-frame modes are split at their largest gap when it exceeds 0.3 m and
+    # the lower side holds at least a quarter of the frames, else taken whole.
+    # (A lower quartile would do for vel but sits ~0.1 m low on a unimodal
+    # member: ROUGH's median is -0.32, its p25 -0.42.)
+    def ground_level(g):
+        g = np.sort(g[~np.isnan(g)]); k = int(np.argmax(np.diff(g)))
+        if g[k + 1] - g[k] > 0.3 and k + 1 >= len(g) / 4:
+            return float(np.median(g[: k + 1])), True
+        return float(np.median(g)), False
+    # Both passes are seeded per frame (numpy: subsampling, max_pairs; torch:
+    # rotation, flip, the +-10 % scale), so "off" and "on" see the same draws
+    # and the paired difference is the shift times that frame's scale factor
+    # -- not the difference of two independent subsamples.
+    import torch
+
+    def fed_ground(member, idx):
         g = []
-        for i in np.random.default_rng(5).choice(len(member), n, replace=False):
+        for i in idx:
+            np.random.seed(int(i)); torch.manual_seed(int(i))
             f = member[int(i)][0][0]                       # (C, N): intensity, x, y, z, radius
             d = np.hypot(f[1], f[2]); z = f[3][(d > 1.5) & (d < 5.0)]
             if len(z) > 300:
                 h, e = np.histogram(z, bins=np.arange(-3, 1.5, 0.04)); g.append(e[np.argmax(h)] + 0.02)
-        return float(np.median(g))
+            else:
+                g.append(np.nan)
+        return np.array(g)
     kw = dict(KW, translation_range=0.0)                   # the ring needs the origin where the robot is
     off = LIST_DATASETS_DISTILL["robotics_v2"](rootdir=a.merged_root, phase="train", **kw)
     on = LIST_DATASETS_DISTILL["robotics_v2"](rootdir=a.merged_root, phase="train", ground_z=-0.29, **kw)
-    print("[5] ground z as fed to the backbone (mode, 1.5-5 m), ground_z off -> -0.29")
+    print("[5] ground z as fed to the backbone (per-frame mode, 1.5-5 m), ground_z off -> -0.29")
     for name, m0, m1 in zip(("rellis_os", "rellis_vel", "rough", "helhest_v1", "helhest_v2"), off.members, on.members):
-        g0, g1 = fed_ground(m0), fed_ground(m1)
-        print(f"    {name:11s} shift {m1.height_shift():+.2f}   {g0:+.2f} -> {g1:+.2f}")
-        assert abs(g1 + 0.29) < 0.12, (name, g1)
+        idx = np.random.default_rng(5).choice(len(m0), 24, replace=False)
+        g0, g1 = fed_ground(m0, idx), fed_ground(m1, idx)
+        paired = float(np.nanmedian(g1 - g0)); lvl, split = ground_level(g1)
+        print(f"    {name:11s} shift {m1.height_shift():+.2f}   paired {paired:+.2f}   "
+              f"median {np.nanmedian(g0):+.2f} -> {np.nanmedian(g1):+.2f}   ground {lvl:+.2f}"
+              + ("  (lower of two clusters)" if split else ""))
+        assert abs(paired - m1.height_shift()) < 0.05, (name, paired, m1.height_shift())
+        assert abs(lvl + 0.29) < 0.12, (name, lvl)
     try:
         LIST_DATASETS_DISTILL["robotics"](rootdir=a.merged_root, phase="train", ground_z=-0.29, **kw)
     except Exception as e:
