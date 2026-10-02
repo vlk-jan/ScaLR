@@ -25,10 +25,10 @@
 # dataset-side runs share it (driven_similarity is one A100 with a 10 h limit).
 # To run on two, change --gres AND the config's batch_size (8) and lr (0.004).
 #
-# WALL CLOCK. 32 epochs x ~11,570 steps (~138,800 samples / 12) = ~370,000
-# steps. v8 measured 0.98 steps/s on this corpus on 3 H200s (366,470 steps in
+# WALL CLOCK. 32 epochs x 11,710 steps (140,521 samples / 12) = 374,720
+# steps. v8 measured 0.98 steps/s on its corpus on 3 H200s (366,470 steps in
 # 4 d 07:43); v9's clouds are the same Odin clouds with a smaller share of the
-# frames, so 0.98-1.1 steps/s gives 93-105 h. 130 h covers the slow case;
+# frames, so 0.98-1.1 steps/s gives 95-106 h. 130 h covers the slow case;
 # h200long's 72 h ceiling does not. distill.py keeps ckpt_last.pth, so a job
 # that dies resumes with --restart rather than starting over.
 #

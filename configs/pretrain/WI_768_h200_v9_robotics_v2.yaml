@@ -1,7 +1,7 @@
 # v9: the robotics_v2 corpus with HELHEST v2.3 -- the first full pretraining on
 # real Odin1 terrain. RELLIS-3D (two lidars), ROUGH, HELHEST v1.5 (Livox) and
-# HELHEST v2.3 (Odin1), motion-gated: 7,800 + 7,793 + 11,434 + 73,806 + ~38,000
-# = ~138,800 samples. Launcher: slurm/pretraining_h200_v9_robotics_v2.batch.
+# HELHEST v2.3 (Odin1), motion-gated: 7,800 + 7,793 + 11,434 + 73,806 + 39,688
+# = 140,521 samples. Launcher: slurm/pretraining_h200_v9_robotics_v2.batch.
 #
 # v9 IS NOT AN A/B AGAINST v8. v8 (job 11689928, completed 2026-09-28, 4 d 07:43
 # on 3 H200s, loss 0.416) read HELHEST_v2_beta: 26 scenes of Stromovka with no
@@ -27,11 +27,22 @@
 #   - calibration is unchanged: T_cam_to_base.txt, camera_info.yaml and
 #     tf_pins.txt are byte-identical to v2.2 per scene, so ground_z and the
 #     fisheye model below are the same numbers.
-# Checked on the finished scenes before this file was written: the loader passes
-# unchanged, and the intensity constants in datasets/helhest_v2_for_scalr.py
+# Checked on the frozen root (2026-10-02, scripts/check_helhest_v2_loader.py,
+# ALL CHECKS PASSED): the loader reads it unchanged, and the intensity constants in datasets/helhest_v2_for_scalr.py
 # (120.839 / 46.277) still describe what the model is fed -- v2.3/0006 reads
 # 154.9 / 17.2 against v2.2/0006's 155.2 / 16.6, i.e. the deskew does not move
-# the intensity scale.
+# the intensity scale. The turn lag is measured gone: the vertical-edge shift
+# that best aligns lidar and image, binned by yaw rate (12 training scenes),
+# runs +108 / +60 / -20 / -76 px full-res at -2.7 / -1.3 / +1.3 / +2.7 rad/s on
+# v2.2 and stays within -4..+14 px in every bin on v2.3.
+#
+# The v2.3 list (HELHEST_v2_3/scalr_keyframes.lst, md5
+# ec74397ecf9e756d4a04a9771f28ed54): 39,688 of the 119,489 frames of
+# 0000-0011; the max_tilt 60 gate drops 486 frames, which are exactly the
+# manifest's tilted runs (0008 147, 0009 17, 0011 322 -- the robot on its roof).
+# 0.4 % of v2 keyframes pair no point at all (scene 0005 and the 0010 reed bed:
+# vegetation against the sensor, nearly every return inside the 0.5 m cut, as
+# in v2.2); __getitem__ raises on those and redraws another frame.
 #
 # Every rig-specific setting here belongs to a named member, as in v8:
 #   im_size [240, 384]       aspect 1.600 = RELLIS and ROUGH 1920x1200, HELHEST
@@ -45,10 +56,10 @@
 # count: an Odin1 frame pairs 11-17k points, a Livox frame ~1,300, a 360-degree
 # Ouster ~1,800. max_pairs 4000 caps every v2 frame and leaves the others
 # untouched, which holds the v2 loss share near 51 % although its FRAME share
-# falls from v8's 40 % to 27 % (its list shrank 68,314 -> ~38,000 while v1.5
+# falls from v8's 40 % to 28 % (its list shrank 68,314 -> 39,688 while v1.5
 # stayed at 73,806). Shares of the pairs that reach the loss, estimated from the
 # per-sensor pair counts (rellis_os / rellis_vel / rough / v1 / v2):
-# ~4.7 / 4.7 / 7.0 / 32.4 / 51.2; frames 5.6 / 5.6 / 8.2 / 53.2 / 27.4.
+# ~4.6 / 4.6 / 6.8 / 31.6 / 52.3; frames 5.6 / 5.5 / 8.1 / 52.5 / 28.2.
 
 point_backbone:
   size_input: 5
@@ -97,7 +108,7 @@ dataloader:
   # out of pretraining as well as out of DRIFT's training.
   helhest_keyframes: scalr_keyframes.lst
   # Matched to v8 and v6 in SAMPLES SEEN, not in epochs: v6 saw 25 x 183,056 =
-  # 4.58 M, v8 26 x 169,147 = 4.40 M, this is 32 x ~138,800 = ~4.44 M. Epochs
+  # 4.58 M, v8 26 x 169,147 = 4.40 M, this is 32 x 140,521 = 4.50 M. Epochs
   # are not comparable across a corpus whose composition changed this much.
   num_epochs: 32
 
