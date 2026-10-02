@@ -38,7 +38,7 @@
 #     v2.3's labels and driven_similarity land after the clouds do.
 #   - both HELHEST roots must carry scalr_keyframes.lst
 #     (scripts/write_scalr_keyframes.py; v1.5 with --base_list keyframes.lst,
-#     v2.3 with --exclude 0012-0017). The lists live INSIDE the roots: a
+#     v2.3 with --exclude <manifest held_out.scenes>). The lists live INSIDE the roots: a
 #     re-extraction of a root deletes its list.
 #   - $D/HELHEST must still resolve to HELHEST_v1_5, or constant_bound 0.0188
 #     describes other labels.
@@ -71,10 +71,18 @@ case "$(readlink -f "$D/HELHEST_V2")" in
 esac
 # The v2.3 build writes FROZEN only after its labels and driven_similarity jobs.
 [ -f "$D/HELHEST_V2/FROZEN" ] || { echo "$D/HELHEST_V2 is not frozen yet"; exit 1; }
-# The held-out Temesvar session must not be in the list this run trains on.
-if grep -qE '^001[2-7]/' "$D/HELHEST_V2/scalr_keyframes.lst"; then
-  echo "$D/HELHEST_V2/scalr_keyframes.lst lists held-out scenes 0012-0017"; exit 1
-fi
+# No scene the manifest holds out (held_out.scenes) may be in the list this run
+# trains on. Read from the manifest, not hard-coded: the split was redesigned
+# on 2026-10-02 when 0018-0024 were added.
+python3 - "$D/HELHEST_V2" <<'PYEOF' || exit 1
+import json, sys
+r = sys.argv[1]
+held = set(json.load(open(f"{r}/manifest.json"))["held_out"]["scenes"])
+seen = {l.split("/")[0] for l in open(f"{r}/scalr_keyframes.lst") if l.strip() and not l.startswith("#")}
+bad = sorted(seen & held)
+print(f"held out {sorted(held)}; list scenes {sorted(seen)}")
+sys.exit(f"scalr_keyframes.lst lists held-out scenes {bad}" if bad else 0)
+PYEOF
 
 # Fragmentation guard, as in v6 and v8: a multi-day run dies at hour 40, not at
 # step 1.
