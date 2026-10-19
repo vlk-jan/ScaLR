@@ -200,7 +200,12 @@ class ImPcDataset(PCDataset):
         if self.geo_targets_root is None:
             return None
         if self._geo_root_name is None:
-            self._geo_root_name = os.path.basename(os.path.realpath(self.rootdir))
+            name = os.path.basename(os.path.realpath(self.rootdir))
+            # False = this member has no target tree (RELLIS, ROUGH): never
+            # touch its keyframe list, whose layout is its own.
+            self._geo_root_name = name if os.path.isdir(os.path.join(self.geo_targets_root, name)) else False
+        if self._geo_root_name is False:
+            return None
         rel = str(self.list_keyframes[index][0])
         scene, stem = rel.split("/")[0], os.path.splitext(os.path.basename(rel))[0]
         path = os.path.join(self.geo_targets_root, self._geo_root_name, scene, f"{stem}.npz")
