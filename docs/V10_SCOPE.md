@@ -200,7 +200,7 @@ cheap input replaces it" (BV §6), and v10 is not run.
 ## 5. What was launched (2026-10-19)
 
 *Decision (user, 2026-10-19): skip the cheap DRIFT arms of §4 ranks 1-3 and go
-straight to a changed objective, both arms at once on the full quota.* The
+straight to a changed objective, both arms at once.* (The 6-GPU per-user limit is per partition QoS: the H200 arms spend `extralongamd`'s, the A100 DRIFT arms `collaborator`'s on amdgpu, so the two do not block each other; user, 2026-10-19.) The
 mechanism behind F3/F5/F11 is now measured (DRIFT `docs/BACKBONE_VALUE.md`
 §11): the DINOv3 target is an appearance code of the recording session (one
 pooled patch names the session at 98 %, 60 % of its variance is between
