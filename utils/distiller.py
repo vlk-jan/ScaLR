@@ -913,17 +913,17 @@ class Distiller:
             running_proprio_sstot = torch.zeros((), device=device)
             running_proprio_n = torch.zeros((), device=device)
             running_proprio_batches = torch.zeros((), device=device)
+            # Snapshot of the five allreduced proprio sums at the PREVIOUS
+            # log point, so each print can report the window since that point
+            # instead of the epoch-to-date mean. See the WINDOWED block below
+            # for why the cumulative form is unusable here.
+            prev_proprio = None
         if self.geo_enabled:
             running_geo_huber = torch.zeros((), device=device)
             running_geo_ssres = torch.zeros((GeoHead.N_TARGETS,), device=device)
             running_geo_sstot = torch.zeros((GeoHead.N_TARGETS,), device=device)
             running_geo_n = torch.zeros((), device=device)
             running_geo_batches = torch.zeros((), device=device)
-            # Snapshot of the five allreduced proprio sums at the PREVIOUS
-            # log point, so each print can report the window since that point
-            # instead of the epoch-to-date mean. See the WINDOWED block below
-            # for why the cumulative form is unusable here.
-            prev_proprio = None
         nonfinite = 0
 
         # Loop over mini-batches
