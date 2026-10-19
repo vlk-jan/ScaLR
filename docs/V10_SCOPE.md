@@ -214,7 +214,7 @@ and DRIFT's head memorises it. Two changes follow, and they are the two arms:
 
 Both: HELHEST_v2_4 corpus through `/mnt/personal/vlkjan6/setprop_v24`
 (171,673 samples, held-out scenes excluded from the list), 26 epochs, 3 H200s,
-`slurm/pretraining_h200_v10.batch` with `ARM=`. Smoke: `slurm/pretraining_v10_smoke.batch`.
+`slurm/pretraining_h200_v10.batch` with `ARM=`. Submitted 2026-10-19 12:58: `v10_geo` job 11825912, `v10_centred` job 11825913 (both pending on priority behind the A100 restart 11817643). Smoke 11825788 (3,213 steps, 1.25 it/s on 1 H200): geo r2 rose to 0.39 / 0.33 / 0.43 for z-range / z-std / fraction (z_min 0.06), centred distillation 1.15, point diversity 0.11, teacher diversity 0.002 as centring predicts.
 Not included: the session-adversarial head (C5) -- centring removes the reward
 for the code; the GRL is the next guard if the probes below still find it.
 
