@@ -51,6 +51,14 @@ def get_datasets(config, args):
         "ground_z": config["point_backbone"].get("ground_z"),
         # Cap on point-pixel pairs per frame; absent = off. ImPcDataset.__getitem__.
         "max_pairs": config["point_backbone"].get("max_pairs"),
+        # Close-up geometry targets for the geo auxiliary (see
+        # ImPcDataset.load_geo_labels); only when the aux is on.
+        "geo_targets_root": (
+            (config.get("geo_supervision") or {}).get("targets_root")
+            if (config.get("geo_supervision") or {}).get("enabled")
+            else None
+        ),
+        "geo_min_count": (config.get("geo_supervision") or {}).get("min_count", 8),
         # ImPcDataset._check_aspect RAISES when im_size's aspect differs from
         # the camera's; this accepts the stretch deliberately.
         "allow_aspect_mismatch": getattr(args, "allow_aspect_mismatch", False),
@@ -272,6 +280,17 @@ def distributed_training(gpu, ngpus_per_node, args, config):
                 else config["point_backbone"]["nb_channels"]
             ),
         )
+    geo_cfg = config.get("geo_supervision")
+    if geo_cfg and geo_cfg.get("enabled"):
+        # Same rule as the proprio head: in_channels follows where it attaches.
+        geo_cfg = dict(
+            geo_cfg,
+            in_channels=(
+                config["point_backbone"]["nb_class"]
+                if geo_cfg.get("depth") is None
+                else config["point_backbone"]["nb_channels"]
+            ),
+        )
     embed_warmup_cfg = config.get("embed_warmup")
     mng = Distiller(
         model_point,
@@ -293,6 +312,7 @@ def distributed_training(gpu, ngpus_per_node, args, config):
         decorr_cfg=decorr_cfg,
         embed_warmup_cfg=embed_warmup_cfg,
         proprio_cfg=proprio_cfg,
+        geo_cfg=geo_cfg,
         print_freq=config.get("dataloader", {}).get("print_freq"),
     )
     if args.restart:

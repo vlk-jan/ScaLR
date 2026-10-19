@@ -212,6 +212,36 @@ class ProprioHead(torch.nn.Module):
         return self.net(feats).squeeze(-1)
 
 
+class GeoHead(torch.nn.Module):
+    """Predicts the close-up geometry of a point's 0.5 m cell from the student's
+    point features: z_min, z_max - z_min, z_std and the fraction of returns above
+    z_min + 0.3 m, as measured by the sweeps recorded while the robot drove up to
+    the cell (scripts/write_geo_targets.py, ImPcDataset.load_geo_labels).
+
+    Cooperative like ProprioHead, but label-free and dense (every return whose
+    cell was later seen close up), and denominated in metres of terrain
+    structure rather than image appearance: the target of a patch is the same
+    whichever day or site it was recorded on, which is exactly what the DINOv3
+    target is not (DRIFT docs/BACKBONE_VALUE.md section 11).
+    """
+
+    N_TARGETS = 4
+
+    def __init__(self, in_channels, hidden_dim=128):
+        super().__init__()
+        self.net = torch.nn.Sequential(
+            torch.nn.LayerNorm(in_channels),  # load-bearing, see ProprioHead
+            torch.nn.Linear(in_channels, hidden_dim),
+            torch.nn.ReLU(inplace=True),
+            torch.nn.Linear(hidden_dim, hidden_dim),
+            torch.nn.ReLU(inplace=True),
+            torch.nn.Linear(hidden_dim, self.N_TARGETS),
+        )
+
+    def forward(self, feats):
+        return self.net(feats)
+
+
 class Distiller:
     def __init__(
         self,
@@ -234,6 +264,7 @@ class Distiller:
         decorr_cfg=None,
         embed_warmup_cfg=None,
         proprio_cfg=None,
+        geo_cfg=None,
         print_freq=None,
     ):
 
@@ -257,6 +288,17 @@ class Distiller:
             raise ValueError(f"Unknown loss type {self.loss_type!r}, expected l2/cosine.")
         self.collapse_weight = float(loss_cfg.get("collapse_weight", 0.0))
         self.collapse_margin = float(loss_cfg.get("collapse_margin", 0.5))
+        # Weight of the distillation term in the total (1.0 = ScaLR); 0 turns
+        # the image teacher into a logged-only quantity for a geometry-only run.
+        self.distill_weight = float(loss_cfg.get("weight", 1.0))
+        # Subtract each frame's mean teacher feature from that frame's targets
+        # before normalisation. DRIFT docs/BACKBONE_VALUE.md section 11: 60 % of
+        # the DINOv3 target's variance is between frames and one patch names the
+        # recording session at 98 %; a student that fits it learns a session
+        # code in every point. Centred targets leave only within-frame
+        # contrast to imitate, and a frame-constant component in the student
+        # output can only cost cosine.
+        self.centre_teacher = bool(loss_cfg.get("centre_teacher", False))
 
         # Dataloaders
         self.max_epoch = max_epoch
@@ -409,6 +451,49 @@ class Distiller:
                 )
                 self.proprio_depth = K
 
+        # Close-up geometry auxiliary (see GeoHead): the proprio pattern, with
+        # a 4-vector target and no acceptance bound (the readout is pooled r2
+        # per target against the batch, logged; the gate is DRIFT's
+        # session-held-out probes on the frozen features).
+        geo_cfg = geo_cfg or {}
+        self.geo_enabled = bool(geo_cfg.get("enabled", False))
+        self.geo_head = None
+        self.geo_optim = None
+        if self.geo_enabled:
+            self.geo_weight = float(geo_cfg.get("weight", 10.0))
+            self.geo_huber_delta = float(geo_cfg.get("huber_delta", 0.05))
+            device = torch.device("cuda", self.rank) if self.rank is not None else torch.device("cuda")
+            head = GeoHead(
+                in_channels=geo_cfg["in_channels"],
+                hidden_dim=int(geo_cfg.get("hidden_dim", 128)),
+            ).to(device)
+            if self.world_size and self.world_size > 1:
+                # Same DDP rationale as the proprio head; geo_loss runs the
+                # dummy forward on batches without targets for the same reason.
+                head = torch.nn.parallel.DistributedDataParallel(
+                    head, device_ids=[self.rank], find_unused_parameters=True
+                )
+            self.geo_head = head
+            self.geo_optim = torch.optim.Adam(
+                self.geo_head.parameters(), lr=float(geo_cfg.get("lr", 1e-3))
+            )
+            self.geo_depth = geo_cfg.get("depth")
+            self._geo_feat = {}
+            if self.geo_depth is not None:
+                K = int(self.geo_depth)
+                core = (
+                    self.model_point.module
+                    if hasattr(self.model_point, "module")
+                    else self.model_point
+                )
+                n_layers = len(core.waffleiron.channel_mix)
+                if not 1 <= K <= n_layers:
+                    raise ValueError(f"geo_supervision.depth={K} outside [1, {n_layers}]")
+                core.waffleiron.channel_mix[K - 1].register_forward_hook(
+                    lambda module, inp, out: self._geo_feat.__setitem__("x", out)
+                )
+                self.geo_depth = K
+
         # Embed-only warmup: freeze every parameter outside the input-facing
         # Embedding module for the first `steps` optimizer steps of the run.
         # For a warm start where the Embedding layer's input-side weights are
@@ -451,6 +536,7 @@ class Distiller:
         pos_r2=None,
         decorr_r2=None,
         proprio=None,
+        geo=None,
     ):
         if self.rank == 0 or self.rank is None:
             # Global score
@@ -461,6 +547,13 @@ class Distiller:
                 log += f" | position_r2 = {pos_r2.mean().item():.3f}"
             if decorr_r2 is not None:
                 log += f" | decorr_r2 = {decorr_r2:.3f}"
+            if geo is not None:
+                huber, r2s, pts = geo
+                r2_txt = " ".join(
+                    f"{n}={v:.2f}" if v is not None else f"{n}=n/a"
+                    for n, v in zip(("zmin", "zrange", "zstd", "frac"), r2s)
+                )
+                log += f" | geo_huber = {huber:.4f} | geo_r2 [{r2_txt}] | geo_pts/batch = {pts:.0f}"
             if proprio is not None:
                 huber, pooled_r2, pts = proprio
                 log += f" | proprio_huber = {huber:.4f}"
@@ -547,10 +640,10 @@ class Distiller:
         else:
             loss = torch.norm(k - q, dim=1, p=2).mean()
 
-        total = loss
+        total = self.distill_weight * loss
         if self.collapse_weight > 0:
             div_k = self.feature_diversity(k)
-            total = loss + self.collapse_weight * F.relu(
+            total = total + self.collapse_weight * F.relu(
                 div_k - self.collapse_margin
             )
         else:
@@ -665,6 +758,35 @@ class Distiller:
             (ss_res.detach(), ss_tot.detach()),
             y_lab.shape[0],
         )
+
+    def geo_loss(self, feat_point, geo_labels, geo_masks):
+        """Masked Huber between GeoHead(student features) and the close-up
+        geometry targets, over the targeted points of the batch; the proprio
+        contract (per-sample unpadded label/mask, dummy forward on an
+        untargeted batch for DDP symmetry) with a (P, 4) label.
+
+        Returns (loss_term, huber_or_None, (ss_res (4,), ss_tot (4,)) or None,
+        n_points).
+        """
+        k_lab, y_lab = [], []
+        for b in range(feat_point.shape[0]):
+            m = geo_masks[b]
+            if m.any():
+                idx = m.nonzero(as_tuple=True)[0]
+                k_lab.append(feat_point[b, :, idx])
+                y_lab.append(geo_labels[b][idx])
+        if not k_lab:
+            dummy = feat_point[:1, :, 0].float()  # (1, C)
+            zero = self.geo_head(dummy).sum() * 0.0
+            return zero, None, None, 0
+        k_lab = torch.cat(k_lab, dim=1).transpose(1, 0).float()  # (P, C)
+        y_lab = torch.cat(y_lab, dim=0).float()  # (P, 4)
+        pred = self.geo_head(k_lab)
+        huber = F.smooth_l1_loss(pred, y_lab, beta=self.geo_huber_delta)
+        with torch.no_grad():
+            ss_res = ((pred - y_lab) ** 2).sum(0)
+            ss_tot = ((y_lab - y_lab.mean(0)) ** 2).sum(0)
+        return self.geo_weight * huber, huber.detach(), (ss_res.detach(), ss_tot.detach()), y_lab.shape[0]
 
     def decorrelate_target(self, feat, pairing_points, q):
         """Removes, per sample, the component of the raw teacher target q that
@@ -791,6 +913,12 @@ class Distiller:
             running_proprio_sstot = torch.zeros((), device=device)
             running_proprio_n = torch.zeros((), device=device)
             running_proprio_batches = torch.zeros((), device=device)
+        if self.geo_enabled:
+            running_geo_huber = torch.zeros((), device=device)
+            running_geo_ssres = torch.zeros((GeoHead.N_TARGETS,), device=device)
+            running_geo_sstot = torch.zeros((GeoHead.N_TARGETS,), device=device)
+            running_geo_n = torch.zeros((), device=device)
+            running_geo_batches = torch.zeros((), device=device)
             # Snapshot of the five allreduced proprio sums at the PREVIOUS
             # log point, so each print can report the window since that point
             # instead of the epoch-to-date mean. See the WINDOWED block below
@@ -818,6 +946,8 @@ class Distiller:
             keys = ["pairing_points", "pairing_images"]
             if self.proprio_enabled:
                 keys += ["proprio_labels", "proprio_masks"]
+            if self.geo_enabled:
+                keys += ["geo_labels", "geo_masks"]
             for key in keys:
                 batch[key] = [p.cuda(self.rank, non_blocking=True) for p in batch[key]]
             cell_ind = batch["cell_ind"].cuda(self.rank, non_blocking=True)
@@ -833,7 +963,11 @@ class Distiller:
                 for b in range(feat_point.shape[0]):
                     k.append(feat_point[b, :, batch["pairing_points"][b]])
                     m = tuple(batch["pairing_images"][b].T.long())
-                    q.append(feat_im[b : b + 1][m])
+                    qb = feat_im[b : b + 1][m]
+                    if self.centre_teacher:
+                        qb = qb.float()
+                        qb = qb - qb.mean(dim=0, keepdim=True)
+                    q.append(qb)
                 k = torch.cat(k, dim=1).transpose(1, 0)
                 q = torch.cat(q, dim=0)
 
@@ -875,6 +1009,15 @@ class Distiller:
                 loss = loss + prop_weighted
                 if prop_huber is not None:
                     proprio_stats = (prop_huber, prop_r2, prop_n)
+            geo_stats = None
+            if self.geo_enabled:
+                geo_feat = feat_point if self.geo_depth is None else self._geo_feat.pop("x")
+                geo_weighted, geo_huber, geo_ss, geo_n = self.geo_loss(
+                    geo_feat, batch["geo_labels"], batch["geo_masks"]
+                )
+                loss = loss + geo_weighted
+                if geo_huber is not None:
+                    geo_stats = (geo_huber, geo_ss, geo_n)
 
             # A non-finite loss means the forward pass overflowed -- under fp16
             # the student's activations can leave the float16 range entirely,
@@ -900,6 +1043,12 @@ class Distiller:
                     running_proprio_sstot += proprio_stats[1][1]
                     running_proprio_n += proprio_stats[2]
                     running_proprio_batches += 1
+                if self.geo_enabled and geo_stats is not None:
+                    running_geo_huber += geo_stats[0]
+                    running_geo_ssres += geo_stats[1][0]
+                    running_geo_sstot += geo_stats[1][1]
+                    running_geo_n += geo_stats[2]
+                    running_geo_batches += 1
             else:
                 nonfinite += 1
                 if nonfinite in (1, 10) or nonfinite % 100 == 0:
@@ -930,6 +1079,14 @@ class Distiller:
                         running_proprio_sstot,
                         running_proprio_n,
                         running_proprio_batches,
+                    ]
+                if self.geo_enabled:
+                    stats += [
+                        running_geo_huber,
+                        running_geo_ssres,
+                        running_geo_sstot,
+                        running_geo_n,
+                        running_geo_batches,
                     ]
                 if self.train_sampler is not None:
                     out = self.gather_scores(stats)
@@ -991,6 +1148,19 @@ class Distiller:
                             win[3] / n_lab,   # mean pts / labeled batch
                         )
                         cursor += 5
+                    geo_r = None
+                    if self.geo_enabled:
+                        # Epoch-to-date means over the batches that carried
+                        # targets (the running sums reset every epoch).
+                        nb = max(out[cursor + 4].item(), 1.0)
+                        ssr, sst = out[cursor + 1], out[cursor + 2]
+                        geo_r = (
+                            out[cursor].item() / nb,
+                            [(1.0 - (ssr[j] / sst[j]).item()) if sst[j].item() > 1e-6 else None
+                             for j in range(GeoHead.N_TARGETS)],
+                            out[cursor + 3].item() / nb,
+                        )
+                        cursor += 5
                     # Print score
                     self.print_log(
                         loss_r,
@@ -999,6 +1169,7 @@ class Distiller:
                         pos_r2=pos_r2_r,
                         decorr_r2=decorr_r2_r,
                         proprio=proprio_r,
+                        geo=geo_r,
                     )
                     # Save in tensorboard
                     if writer is not None:
@@ -1027,6 +1198,12 @@ class Distiller:
                             )
                         if self.decorr_enabled:
                             writer.add_scalar(header + "/decorr_r2", decorr_r2_r, step)
+                        if self.geo_enabled and geo_r is not None:
+                            writer.add_scalar(header + "/geo_huber", geo_r[0], step)
+                            writer.add_scalar(header + "/geo_pts_per_batch", geo_r[2], step)
+                            for n, v in zip(("zmin", "zrange", "zstd", "frac"), geo_r[1]):
+                                if v is not None:
+                                    writer.add_scalar(header + f"/geo_r2_{n}", v, step)
                         if self.proprio_enabled and proprio_r is not None:
                             writer.add_scalar(
                                 header + "/proprio_huber", proprio_r[0], step
@@ -1056,6 +1233,8 @@ class Distiller:
                 self.position_optim.zero_grad(set_to_none=True)
             if self.proprio_enabled:
                 self.proprio_optim.zero_grad(set_to_none=True)
+            if self.geo_enabled:
+                self.geo_optim.zero_grad(set_to_none=True)
             if not finite:
                 if self.scheduler is not None:
                     self.scheduler.step()
@@ -1067,6 +1246,8 @@ class Distiller:
                     self.scaler.step(self.position_optim)
                 if self.proprio_enabled:
                     self.scaler.step(self.proprio_optim)
+                if self.geo_enabled:
+                    self.scaler.step(self.geo_optim)
                 self.scaler.update()
             else:
                 loss.backward()
@@ -1075,6 +1256,8 @@ class Distiller:
                     self.position_optim.step()
                 if self.proprio_enabled:
                     self.proprio_optim.step()
+                if self.geo_enabled:
+                    self.geo_optim.step()
             if self.scheduler is not None:
                 self.scheduler.step()
 
@@ -1189,6 +1372,15 @@ class Distiller:
                 warnings.warn("Proprio optimizer state not available")
             else:
                 self.proprio_optim.load_state_dict(ckpt["proprio_optim"])
+        if self.geo_enabled:
+            if ckpt.get("geo_head") is None:
+                warnings.warn("Geo head state not available; using fresh init")
+            else:
+                self.geo_head.load_state_dict(ckpt["geo_head"])
+            if ckpt.get("geo_optim") is None:
+                warnings.warn("Geo optimizer state not available")
+            else:
+                self.geo_optim.load_state_dict(ckpt["geo_optim"])
         if self.scheduler is not None:
             if ckpt.get("scheduler") is None:
                 warnings.warn("Scheduler state not available")
@@ -1232,6 +1424,9 @@ class Distiller:
             if self.proprio_enabled:
                 dict_to_save["proprio_head"] = self.proprio_head.state_dict()
                 dict_to_save["proprio_optim"] = self.proprio_optim.state_dict()
+            if self.geo_enabled:
+                dict_to_save["geo_head"] = self.geo_head.state_dict()
+                dict_to_save["geo_optim"] = self.geo_optim.state_dict()
             filename = self.path_to_ckpt + "/ckpt_last.pth"
             torch.save(dict_to_save, filename)
 

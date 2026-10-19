@@ -1,0 +1,116 @@
+# v10 (centred): the v9 recipe on the HELHEST_v2_4 corpus with the pretraining
+# objective changed where DRIFT's measurements point (DRIFT
+# docs/BACKBONE_VALUE.md section 11, 2026-10-19):
+#   * the DINOv3 target is an appearance code of the recording session (one
+#     patch names the session at 98 %%, 60 %% of its variance is between frames);
+#     the student copies it, DRIFT's head memorises it, and a frozen RANDOM
+#     WaffleIron beats WI_v9 on held-out sessions. Here every frame's teacher
+#     features are CENTRED (their mean over the frame's paired pixels removed)
+#     before the loss, so only within-frame appearance contrast is imitated.
+#
+# Corpus: --path_dataset /mnt/personal/vlkjan6/setprop_v24 (HELHEST -> v1_5,
+# HELHEST_V2 -> v2_4 with its scalr_keyframes.lst, 70,840 frames, held-out
+# scenes 0001 0019 0020 0024-0027 0034 0035 excluded), RELLIS and ROUGH as v9.
+# 171,673 samples. Everything else is v9: 3 H200s, batch 12, lr 0.006, proprio
+# auxiliary on v1.5 labels, max_pairs 4000, ground_z -0.29.
+#
+point_backbone:
+  size_input: 5
+  input_features: ["intensity", "xyz", "radius"]
+  nb_channels: 768
+  nb_class: 1280 # must match the ViT feature size
+  depth: 36
+  dim_proj: [2, 1, 0]
+  grid_shape: [[256, 256], [256, 32], [256, 32]]
+  fov: [[-64, -64, -8], [64, 64, 8]]
+  num_neighbors: 16
+  voxel_size: 0.1
+  max_points: 20000
+  layernorm: True
+  # At most this many point-pixel pairs per frame reach the distillation loss
+  # (random subset, redrawn per draw); the backbone still sees the whole cloud.
+  # ImPcDataset.__getitem__.
+  max_pairs: 4000
+  # z is a network input and the translation augmentation is xy-only, so without
+  # this every member tells the backbone its mounting height: ground sits at
+  # -1.07 m (RELLIS os1), -0.89 (RELLIS vel), -0.41 (ROUGH), -0.29 (HELHEST v1
+  # and v2). Each member is shifted by a per-dataset constant onto -0.29, which
+  # leaves HELHEST exactly where DRIFT reads it. ImPcDataset.height_shift.
+  ground_z: -0.29
+
+image_backbone:
+  images_encoder: "dinov3_vit_huge_p16"
+  feat: "x"
+  im_size: [240, 384]
+
+dataloader:
+  # 4 per GPU on 3 GPUs, as validated for v8 (the H200 sweep held b4 at 89 GB
+  # and lost b8; the robotics_v2 smoke held 4/GPU for 2,990 steps with Odin
+  # clouds in the mix). Three GPUs rather than four because the account's quota
+  # is 6 and the dataset-side jobs share it.
+  #
+  # ON 2 GPUS: batch_size 8, lr 0.004, --gres=gpu:2, and ~1.5x the wall clock.
+  # batch_size must stay a multiple of the GPU count (distill.py divides it).
+  batch_size: 12
+  num_workers: 56
+  # Both HELHEST members read this list instead of their defaults (v1
+  # keyframes.lst = every map-bearing frame; v2 ships no list at all). Written
+  # into each root by scripts/write_scalr_keyframes.py -- for v1.5 with
+  # --base_list keyframes.lst so DRIFT's map gate is kept, for v2.3 with
+  # --exclude <manifest held_out.scenes> (split A: 0001,0015,0016,0020-0023) so
+  # DRIFT's validation scenes stay out of pretraining as well.
+  helhest_keyframes: scalr_keyframes.lst
+  # Matched to v8 and v6 in SAMPLES SEEN, not in epochs: v6 saw 25 x 183,056 =
+  # 4.58 M, v8 26 x 169,147 = 4.40 M, this is 32 x 153,861 = 4.92 M (32 was
+  # chosen on the 140,521-sample corpus before split A; kept). Epochs
+  # are not comparable across a corpus whose composition changed this much.
+  # 26 epochs x 14,306 steps (171,673 samples / 12) = 372k steps, 4.46 M samples
+  # (v9: 4.92 M). 28 would be 400k steps and v9's 410k used most of the 130 h.
+  num_epochs: 26
+
+optim:
+  # Linear in the global batch, as every config here has been: 0.002 at 4
+  # (WI_768_pretrain), 0.008 at 16 (h200, v4-v7) -> 0.006 at 12.
+  lr: 0.006
+  weight_decay: 0.03
+  # v6's 1500 steps at batch 16 = 24,000 samples = 2,000 steps at batch 12.
+  iter_warmup: 2000
+  min_lr: 0.00001
+
+loss:
+  type: "l2"
+  # Per-frame centred teacher targets, see utils/distiller.py (centre_teacher).
+  centre_teacher: True
+  collapse_weight: 0.0
+  collapse_margin: 0.5
+
+augmentations:
+  translation_range: 10.0
+
+proprio_supervision:
+  enabled: True
+  weight: 2.0
+  hidden_dim: 128
+  lr: 0.001
+  huber_delta: 0.05
+  # HELHEST v1.5 labels through setprop/HELHEST -> HELHEST_v1_5. BOUND 0.0188,
+  # 95 % CI [0.0154, 0.0229], measured on the gated list as this run samples it
+  # (slurm/measure_bound_v8.batch, job 11684404, 866 frames, 22.8 labelled
+  # points/frame); the ungated measurement was 0.0196, CI [0.0154, 0.0241]
+  # (slurm/out/measure_bound_v15_11561034.out). Same labels, same list as v8.
+  constant_bound: 0.0188
+  depth: null
+  # HELHEST v2.3 ships DRIFT's labels for the Odin rig in every scene, and they
+  # are NOT trained on (user, 2026-09-30): they are 5-10x v1.5's (median
+  # compression 0.073 m on cobbles, 0.113 Lipnik, 0.153 Temesvar against v1.5's
+  # 0.015), carrying the accepted ~2 deg receiver pitch and the wheel radius,
+  # under a constant_bound measured on v1.5. "ignore" sends v2 frames to the aux
+  # loss with an empty mask, exactly as v8 did on the label-less beta root.
+  # Without this key the v2 loader refuses a root that has a label tree.
+  helhest_v2_labels: ignore
+  # OFF, as in every run so far: the aux is supervised on all labelled frames,
+  # including the ones DRIFT validates on (datasets/helhest_for_scalr.py,
+  # DRIFT_N_FOLDS block). "scene" withholds DRIFT's scene-fold val scenes, which
+  # is 42 % of the labels, and the bound above would need re-measuring on what
+  # is left. A decision about how this backbone will be judged, not a default.
+  drift_val_exclusion: null

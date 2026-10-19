@@ -1,0 +1,69 @@
+#!/bin/bash
+#SBATCH --nodes=1
+#SBATCH --ntasks-per-node=1
+#SBATCH --time=130:00:00
+#SBATCH --error=slurm/out/%x_%j_err.out
+#SBATCH --output=slurm/out/%x_%j_std.out
+#SBATCH --partition=h200extralong
+#SBATCH --cpus-per-task=62
+#SBATCH --gres=gpu:3
+#SBATCH --exclude=h01
+#SBATCH --mem=512G
+#SBATCH --mail-user=vlkjan6@fel.cvut.cz
+#SBATCH --mail-type=FAIL
+
+# v10 pretraining, one of two arms chosen by ARM (configs/pretrain/WI_768_h200_v10_<ARM>.yaml):
+#   centred  v9 recipe + per-frame centred DINOv3 targets
+#   geo      centred + the close-up geometry auxiliary at block 36
+# Submit from a login shell, from the ScaLR root:
+#   sbatch --export=ALL,ARM=geo --job-name=v10_geo slurm/pretraining_h200_v10.batch
+# A job that dies or times out is resubmitted the same way: ckpt_last.pth in
+# the log dir is resumed automatically (--restart). Everything the v9 batch
+# says about GPUs, wall clock and h01 still holds (slurm/pretraining_h200_v9_robotics_v2.batch).
+set -euo pipefail
+cd "${SLURM_SUBMIT_DIR:-.}"
+ARM="${ARM:?set ARM=centred|geo}"
+CFG=configs/pretrain/WI_768_h200_v10_${ARM}.yaml
+LOG=logs/pretraining/full_v10_${ARM}
+[ -f "$CFG" ] || { echo "no config $CFG"; exit 1; }
+
+D=/mnt/personal/vlkjan6/setprop_v24
+case "$(readlink -f "$D/HELHEST")" in */HELHEST_v1_5) ;; *) echo "$D/HELHEST is not HELHEST_v1_5 (constant_bound 0.0188 is a v1.5 number)"; exit 1 ;; esac
+case "$(readlink -f "$D/HELHEST_V2")" in */HELHEST_v2_4) ;; *) echo "$D/HELHEST_V2 is not HELHEST_v2_4"; exit 1 ;; esac
+[ -f "$D/HELHEST_V2/FROZEN" ] || { echo "$D/HELHEST_V2 is not frozen"; exit 1; }
+for r in HELHEST HELHEST_V2; do
+  [ -f "$D/$r/scalr_keyframes.lst" ] || { echo "missing $D/$r/scalr_keyframes.lst"; exit 1; }
+done
+# No held-out scene of the manifest may be in the training list.
+python3 - "$D/HELHEST_V2" <<'PYEOF' || exit 1
+import json, sys
+r = sys.argv[1]
+held = set(json.load(open(f"{r}/manifest.json"))["held_out"]["scenes"])
+seen = {l.split("/")[0] for l in open(f"{r}/scalr_keyframes.lst") if l.strip() and not l.startswith("#")}
+bad = sorted(seen & held)
+print(f"held out {sorted(held)}; list scenes {sorted(seen)}")
+sys.exit(f"scalr_keyframes.lst lists held-out scenes {bad}" if bad else 0)
+PYEOF
+if [ "$ARM" = geo ]; then
+  # The geo targets must exist for BOTH HELHEST roots before the run starts: a
+  # missing file is "no target for this frame", silently.
+  for r in HELHEST_v1_5 HELHEST_v2_4; do
+    n=$(find /mnt/personal/vlkjan6/scalr_geo_targets/$r -name '*.npz' 2>/dev/null | wc -l)
+    echo "geo targets $r: $n"
+    [ "$n" -ge 50000 ] || { echo "too few geo targets for $r (scripts/write_geo_targets.py)"; exit 1; }
+  done
+fi
+
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+PY=./.venv/bin/python
+echo "host $(hostname)  commit $(git rev-parse --short HEAD)  WaffleIron $(git -C WaffleIron rev-parse --short HEAD)  arm $ARM"
+echo "v2 root $(readlink -f "$D/HELHEST_V2"), $(grep -cv '^#' "$D/HELHEST_V2/scalr_keyframes.lst") keyframes"
+echo "v1 root $(readlink -f "$D/HELHEST"), $(grep -cv '^#' "$D/HELHEST/scalr_keyframes.lst") keyframes"
+$PY -c 'import sys, torch; print(sys.executable, torch.__version__, "gpus", torch.cuda.device_count())'
+nvidia-smi -L
+
+RESTART=
+if [ -f "$LOG/ckpt_last.pth" ]; then echo "resuming $LOG/ckpt_last.pth"; RESTART=--restart; fi
+$PY distill.py --config "$CFG" --log_path "$LOG" \
+  --dataset robotics_v2 --path_dataset "$D" \
+  --multiprocessing-distributed --bf16 $RESTART

@@ -1,0 +1,25 @@
+#!/bin/bash
+#SBATCH --nodes=1
+#SBATCH --ntasks-per-node=1
+#SBATCH --time=00:40:00
+#SBATCH --error=slurm/out/v10_smoke_err.out
+#SBATCH --output=slurm/out/v10_smoke_std.out
+#SBATCH --partition=h200fast
+#SBATCH --cpus-per-task=12
+#SBATCH --gres=gpu:1
+#SBATCH --mem=128G
+#SBATCH --job-name=v10_smoke
+
+# Plumbing check for the v10 changes (centred teacher + geo auxiliary) on one
+# GPU, warm-started from v9 so the geo head's fit is visible within the 40 min.
+set -euo pipefail
+cd "${SLURM_SUBMIT_DIR:-.}"
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+PY=./.venv/bin/python
+echo "host $(hostname)  commit $(git rev-parse --short HEAD)"; $PY -c 'import sys, torch; print(sys.executable, torch.__version__, "cuda", torch.cuda.is_available())'; nvidia-smi -L
+echo "geo targets: $(find /mnt/personal/vlkjan6/scalr_geo_targets -name '*.npz' | wc -l) files"
+rm -rf logs/pretraining/v10_smoke
+$PY distill.py --config configs/pretrain/WI_768_v10_smoke.yaml \
+  --log_path logs/pretraining/v10_smoke \
+  --dataset robotics_v2 --path_dataset /mnt/personal/vlkjan6/setprop_v24 \
+  --gpu 0 --bf16 --warm_start_ckpt logs/pretraining/full_v9_robotics_v2/ckpt_last.pth

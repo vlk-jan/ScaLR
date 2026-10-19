@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import os
 import warnings
 import torch
 import numpy as np
@@ -39,6 +40,8 @@ class CollateDistillation:
             neighbors_emb,
             proprio_labels,
             proprio_masks,
+            geo_labels,
+            geo_masks,
         ) = list_of_data
 
         # Zero-pad point clouds
@@ -70,6 +73,9 @@ class CollateDistillation:
         # -- same convention as pairing_points.
         proprio_labels = [torch.tensor(p, dtype=torch.float32) for p in proprio_labels]
         proprio_masks = [torch.tensor(p, dtype=torch.bool) for p in proprio_masks]
+        # Same convention, (N, GEO_N_TARGETS) per sample; see load_geo_labels.
+        geo_labels = [torch.tensor(p, dtype=torch.float32) for p in geo_labels]
+        geo_masks = [torch.tensor(p, dtype=torch.bool) for p in geo_masks]
 
         # Prepare output variables
         out = {
@@ -82,6 +88,8 @@ class CollateDistillation:
             "pairing_images": pairing_images,
             "proprio_labels": proprio_labels,
             "proprio_masks": proprio_masks,
+            "geo_labels": geo_labels,
+            "geo_masks": geo_masks,
         }
 
         return out
@@ -100,9 +108,17 @@ class ImPcDataset(PCDataset):
         allow_aspect_mismatch=False,
         ground_z=None,
         max_pairs=None,
+        geo_targets_root=None,
+        geo_min_count=8,
         **kwargs,
     ):
         super().__init__(**kwargs)
+
+        # Close-up geometry targets (scripts/write_geo_targets.py), see
+        # load_geo_labels. None = the geo auxiliary is off.
+        self.geo_targets_root = geo_targets_root
+        self.geo_min_count = int(geo_min_count)
+        self._geo_root_name = None
 
         # Cap on point-pixel pairs per frame, see __getitem__. None = off.
         self.max_pairs = None if max_pairs is None else int(max_pairs)
@@ -161,6 +177,52 @@ class ImPcDataset(PCDataset):
         same index masks as the points, so implementations must not reorder.
         """
         return None
+
+    # Columns of the per-point geo target, in metres except the last:
+    # z_min of the cell seen close up, z_max - z_min, z_std, fraction of returns
+    # more than 0.3 m above z_min (all over returns within 2 m of z_min).
+    GEO_TARGETS = ("zmin", "zrange", "zstd", "frac_above")
+
+    def load_geo_labels(self, index, pc):
+        """Per-point close-up geometry targets, or None when this sample has none.
+
+        The file is <geo_targets_root>/<real root basename>/<scene>/<stem>.npz,
+        written by scripts/write_geo_targets.py from the sweeps that followed
+        the keyframe; both HELHEST loaders list frames as
+        <scene>/clouds/<stem>.npy, so the lookup is the same for both rigs, and
+        a member without such files (RELLIS, ROUGH) simply gets None. Looked up
+        on the RAW ego-frame coordinates like the proprio labels: the grid is
+        the keyframe's own base_link.
+
+        Returns (labels (N, 4) float32, mask (N,) bool); a point is masked in
+        when its cell got at least geo_min_count returns close up.
+        """
+        if self.geo_targets_root is None:
+            return None
+        if self._geo_root_name is None:
+            self._geo_root_name = os.path.basename(os.path.realpath(self.rootdir))
+        rel = str(self.list_keyframes[index][0])
+        scene, stem = rel.split("/")[0], os.path.splitext(os.path.basename(rel))[0]
+        path = os.path.join(self.geo_targets_root, self._geo_root_name, scene, f"{stem}.npz")
+        if not os.path.exists(path):
+            return None
+        d = np.load(path)
+        cell, half = float(d["cell"]), float(d["half"])
+        count = d["count"]
+        g = count.shape[0]
+        r = np.floor((pc[:, 0] + half) / cell).astype(np.int64)
+        c = np.floor((pc[:, 1] + half) / cell).astype(np.int64)
+        inb = (r >= 0) & (r < g) & (c >= 0) & (c < g)
+        r, c = np.clip(r, 0, g - 1), np.clip(c, 0, g - 1)
+        mask = inb & (count[r, c] >= self.geo_min_count)
+        zmin = d["zmin"].astype(np.float32)
+        lab = np.stack(
+            [zmin[r, c], (d["zmax"].astype(np.float32) - zmin)[r, c],
+             d["zstd"].astype(np.float32)[r, c], d["frac_above"].astype(np.float32)[r, c]],
+            axis=1,
+        )
+        lab[~mask] = 0.0
+        return lab, mask
 
     def __len__(self):
         raise NotImplementedError()
@@ -353,6 +415,13 @@ class ImPcDataset(PCDataset):
                     proprio_mask = np.zeros(pc.shape[0], dtype=bool)
                 else:
                     proprio_label, proprio_mask = proprio
+                # Close-up geometry targets, same frame and same threading.
+                geo = self.load_geo_labels(index, pc)
+                if geo is None:
+                    geo_label = np.zeros((pc.shape[0], len(self.GEO_TARGETS)), dtype=np.float32)
+                    geo_mask = np.zeros(pc.shape[0], dtype=bool)
+                else:
+                    geo_label, geo_mask = geo
 
                 # Limit number of points and ...
                 n_before = pc.shape[0]
@@ -364,6 +433,8 @@ class ImPcDataset(PCDataset):
                 pairing_images = pairing_images[keep]
                 proprio_label = proprio_label[idx]
                 proprio_mask = proprio_mask[idx]
+                geo_label = geo_label[idx]
+                geo_mask = geo_mask[idx]
 
                 # Put the ground at the corpus-wide height (see height_shift)
                 if dz != 0.0:
@@ -385,6 +456,8 @@ class ImPcDataset(PCDataset):
                 pairing_images = pairing_images[keep]
                 proprio_label = proprio_label[idx]
                 proprio_mask = proprio_mask[idx]
+                geo_label = geo_label[idx]
+                geo_mask = geo_mask[idx]
                 assert pairing_points.shape[0] > 0, (
                     f"No paired points survive the fov crop. For "
                     f"{self.list_keyframes[index][0]}"
@@ -413,6 +486,8 @@ class ImPcDataset(PCDataset):
             neighbors.T[None],
             proprio_label,
             proprio_mask,
+            geo_label,
+            geo_mask,
         )
 
         return out
