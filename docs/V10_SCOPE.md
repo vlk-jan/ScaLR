@@ -227,3 +227,40 @@ against random WI and v9 on the same cells,
 (c) ≥ 80 % of block-36 variance within the frame (v9 71 %),
 (d) the §3 MLP/ridge legs against random WI. Then one DRIFT arm on the passing
 checkpoint, paired on v2.3 held-out against v24combo.
+
+### 5.1 Epoch-6 gate (2026-10-21, checkpoints after 6 of 26 epochs)
+
+CPU dump of both `ckpt_last.pth` snapshots (`/mnt/personal/vlkjan6/scratch_wi_probe/v10e6`,
+same 1,119 frames and cells as the v24 probe, random WI and v9 re-dumped alongside;
+`analysis_wedge60_mlp.txt`, `why.txt`). Session-held-out ridge on 35,266 label
+cells, compression MAE with geom4 appended, mm:
+
+| features | block 0 | 6 | 12 | 18 | 24 | 36 |
+|---|---|---|---|---|---|---|
+| random WI | 38.0 | 39.0 | 41.1 | 41.1 | 41.8 | 42.0 |
+| v9 | | | | | | 41.6 |
+| v10_centred | 35.9 | 35.7 | 33.7 | 33.6 | 35.2 | 37.5 |
+| v10_geo | 37.2 | **32.6** | 33.0 | 34.3 | 34.1 | 38.4 |
+| hand-crafted 16 | 39.0 | | | | | |
+
+Paired per session against the hand-crafted stats: geo block 6 −4.8 ± 4.7 mm
+(7/7 sessions better), centred block 12 −3.9 ± 4.2 (5/7). MLP leg (PCA-128,
+256-256): geo block 12 41.3 mm against random block 12 49.8, hand-crafted
+45.8, v9 block 36 136 (collapses). Frame-level readout: geo block 6 47.8 mm,
+centred block 36 48.6, random 57.9, v9 53.0, hand-crafted 34.0.
+
+Against the gate criteria: (c) within-frame variance share at block 36
+centred 0.85, geo 0.80 (v9 0.71) PASS; (a) session identity from one block-36
+cell centred 0.53, geo 0.52 (v9 0.55, random 0.46, hand-crafted 0.31) FAIL;
+(b) memorisation gap centred +5.1 mm, geo +5.5 (v9 +6.9, random +4.4..+5.2,
+target ≤ 4) marginal; (d) both arms beat random WI in every ridge and MLP leg
+at blocks 6-24. Geometry content of a block-12 cell: 1 m z-std R² geo 0.94,
+centred 0.92 (random 0.79, v9 0.82). Effective rank at block 36: centred 6.2,
+geo 8.5 (v9 9.2, random 3.5).
+
+Reading: the session code is reduced, not removed -- the last twelve blocks
+still lose 4-6 mm against block 12 in both arms, geo head at block 36
+notwithstanding. The mid-depth taps are the best cell features measured so
+far. Verdict stays open until the end-of-training gate and one DRIFT arm
+paired against v24_combo; if the end-of-training block 36 still trails block
+12, the DRIFT arm should read the mid taps (or the GRL guard goes in).
