@@ -305,3 +305,13 @@ partly confounded with the intensity change). The only candidate is a
 truncated geo backbone read at block 6 (or 12), a 3-4 mm ridge gain the
 session spread does not separate from zero; only a paired DRIFT arm against
 v24_combo can settle it.
+
+**2026-10-24 follow-up (user: "as expressive results as I can get").** (1) The
+intensity confound is being closed with the two missing corners of
+{epoch 6, final} x {v1_legacy, rig} on v2.4 (`scratch_wi_probe/v10e6_rig`,
+`scratch_wi_probe/v10final_v1`). (2) Three DRIFT arms on the v26 recipe with the
+backbone as the only variable, through DRIFT `slurm/v26_backbone.batch`: random
+WI (11868090, amdgpulong), v10 geo cut at block 6 (`WI_v10_geo_L6.pth`,
+11868088 + restart 11868089, amdgpu), v10 geo at 36 blocks (`WI_v10_geo.pth`,
+11868091, amdgpuextralong). They are paired afterwards on the v2.5 held-out
+scenes from their score dumps.
