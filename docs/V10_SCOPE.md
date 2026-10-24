@@ -315,3 +315,33 @@ WI (11868090, amdgpulong), v10 geo cut at block 6 (`WI_v10_geo_L6.pth`,
 11868088 + restart 11868089, amdgpu), v10 geo at 36 blocks (`WI_v10_geo.pth`,
 11868091, amdgpuextralong). They are paired afterwards on the v2.5 held-out
 scenes from their score dumps.
+
+**Intensity factorial (done 2026-10-24 21:19).** Session-held-out ridge MAE
+(+geom4, mm, v2.4, 1,104 frames), from `analysis_wedge60_mlp.txt` of
+`v10e6`, `v10e6_rig`, `v10final_v1`, `v10final`:
+
+| row | ep6 v1_legacy | ep6 rig | final v1_legacy | final rig |
+|---|---|---|---|---|
+| geo L36 | 38.4 | 44.0 | 42.1 | 45.9 |
+| centred L36 | 37.5 | 49.7 | 40.1 | 48.7 |
+| geo L6 | 32.6 | 33.8 | 34.7 | 33.5 |
+| centred L12 | 33.7 | 36.1 | 34.0 | 36.1 |
+| random L0 / L36 | 38.0 / 42.0 | 37.1 / 41.7 | 38.0 / 42.2 | 37.1 / 41.7 |
+| v9 L36 | 41.6 | 52.6 | 41.1 | 52.6 |
+
+At block 36 the intensity mode is the larger effect: rig costs geo +5.6 / +3.8
+and centred +12.2 / +8.6 mm (epoch 6 / final), v9 +11. Further training at a
+fixed mode costs geo +3.7 (v1) / +1.9 (rig) and centred +2.6 / -1.0. So about
+two thirds of the epoch-6 -> final block-36 drop reported in §5.1/§5.2 is the
+intensity change, not training. Under v1_legacy the final block 36 ties random
+block 36 (geo paired +0.3 +- 4.0, centred +0.6 +- 6.6 mm) and still loses to
+random block 0; the gate still fails at block 36 in every cell. The mid taps
+barely move with intensity: geo L6 is the best v10 tap in every cell, paired
+-3.9 to -5.3 mm against random, inside the session sd (3.4-5.7). Rig puts the
+channel at mean 0.83 sd 0.41 (near what pretraining saw), v1_legacy at 7.30 sd
+0.91, yet the deep blocks read better under v1_legacy; block-36 session
+identity is also lower there (geo 0.48 vs 0.52, centred 0.51 vs 0.55 at final).
+Unexplained; one reading is that rig lets the deep blocks use intensity as an
+appearance code. Consequence for the DRIFT arms (INORM rig): geo6 is insensitive
+to the mode; geo36 runs in its worst cell, and a v1_legacy geo36 sibling would
+be the fair test of the full-depth backbone.
