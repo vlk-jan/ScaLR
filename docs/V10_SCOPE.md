@@ -264,3 +264,44 @@ notwithstanding. The mid-depth taps are the best cell features measured so
 far. Verdict stays open until the end-of-training gate and one DRIFT arm
 paired against v24_combo; if the end-of-training block 36 still trails block
 12, the DRIFT arm should read the mid taps (or the GRL guard goes in).
+
+### 5.2 Final gate (2026-10-24, both arms completed 2026-10-23, epoch 26 of 26)
+
+Final `ckpt_last.pth` copied to `/mnt/personal/vlkjan6/scratch_wi_probe/v10final`
+(v2.4 readout) and read again on HELHEST_v2_5 maps and labels
+(`.../v10final_v25`). 1,104 of the 1,119 probe frames: DRIFT's loader gates
+dropped 15, so the probe now resolves frames by cloud path. **Not like-for-like
+with §5.1:** DRIFT now feeds v2 clouds with the Odin1 rig intensity constants
+(120.8 / 46.3, DRIFT commit "Pass --intensity_norm explicitly; rig constants are
+the default"), the convention v10 was pretrained on; the epoch-6 dump fed the v1
+constants. Random WI is insensitive to this (42.0 -> 41.7 mm), v9 is not (41.6 -> 52.6).
+
+Session-held-out ridge, compression MAE with geom4, mm (v2.4 / v2.5 target):
+
+| features | block 0 | 6 | 12 | 18 | 36 |
+|---|---|---|---|---|---|
+| random WI | 37.1 / 35.2 | 39.8 / 37.0 | 41.1 / 38.3 | 41.0 / 38.5 | 41.7 / 39.0 |
+| v9 | | | | | 52.6 / 45.9 |
+| v10_centred | 39.1 / 37.1 | 36.7 / 35.7 | 36.1 / 35.1 | 46.9 / 44.7 | 48.7 / 45.3 |
+| v10_geo | 36.9 / 36.3 | **33.5 / 32.6** | 35.1 / 34.2 | 37.9 / 36.8 | 45.9 / 42.8 |
+| hand-crafted 16 | 39.2 / 38.5 | | | | |
+
+Paired per session, geo block 6: −4.0 ± 4.9 mm against hand-crafted (6/7
+sessions), −4.3 ± 5.7 against random WI block 0 on v2.4, −3.2 ± 4.4 on v2.5 --
+inside one session sd. MLP leg (PCA-128): geo block 12 46.5 mm vs random 47.5 on
+v2.4, 64.8 vs 44.1 on v2.5; block 36 of both arms collapses (110-134 mm). Block
+36: within-frame variance 0.70 / 0.72 (v9 0.68), effective rank 24, session
+identity from one cell 0.54-0.56 (hand-crafted 0.29), memorisation gap +7.7 mm.
+v2.4 and v2.5 rank every row the same way; the v2.5 target is smaller (mean
+0.095 m vs 0.169) and absolute MAE moves less than 3 mm.
+
+Against the gate: (a) FAIL, (b) FAIL (best mid tap geo block 6 +5.3 mm, random
++3.9..+5.9), (c) FAIL at block 36, PASS at blocks 6-24 (0.84-0.89), (d) ridge
+legs beat random WI at geo blocks 6-12 by 2-4 mm but within the session spread;
+the MLP leg does not. Verdict: **neither final block-36 checkpoint replaces the
+random backbone.** The session code returned in the last blocks as training ran
+on (block 36 frame-within-session share 0.12 at epoch 6, 0.23-0.26 at the end,
+partly confounded with the intensity change). The only candidate is a
+truncated geo backbone read at block 6 (or 12), a 3-4 mm ridge gain the
+session spread does not separate from zero; only a paired DRIFT arm against
+v24_combo can settle it.
