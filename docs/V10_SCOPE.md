@@ -300,7 +300,7 @@ Against the gate: (a) FAIL, (b) FAIL (best mid tap geo block 6 +5.3 mm, random
 legs beat random WI at geo blocks 6-12 by 2-4 mm but within the session spread;
 the MLP leg does not. Verdict: **neither final block-36 checkpoint replaces the
 random backbone.** The session code returned in the last blocks as training ran
-on (block 36 frame-within-session share 0.12 at epoch 6, 0.23-0.26 at the end,
+on (block 36 frame-within-session share 0.12-0.17 at epoch 6, 0.23-0.26 at the end,
 partly confounded with the intensity change). The only candidate is a
 truncated geo backbone read at block 6 (or 12), a 3-4 mm ridge gain the
 session spread does not separate from zero; only a paired DRIFT arm against
