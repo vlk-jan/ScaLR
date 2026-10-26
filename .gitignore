@@ -15,6 +15,7 @@ logs/
 my_own_logs/
 dinov2_weights/
 dinov3_weights/
+checkpoints/
 
 # Other folders
 run_mode/
