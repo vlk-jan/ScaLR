@@ -751,11 +751,10 @@ class Distiller:
             # numerator and denominator and dividing ONCE at log time needs no
             # clamp and no epsilon.
             ss_res = ((pred - y_lab) ** 2).sum()
-            ss_tot = ((y_lab - y_lab.mean()) ** 2).sum()
         return (
             self.proprio_weight * huber,
             huber.detach(),
-            (ss_res.detach(), ss_tot.detach()),
+            (ss_res.detach(), (y_lab ** 2).sum(), y_lab.sum()),
             y_lab.shape[0],
         )
 
@@ -763,6 +762,9 @@ class Distiller:
         """Masked Huber between GeoHead(student features) and the close-up
         geometry targets, over the targeted points of the batch; the proprio
         contract (per-sample unpadded label/mask, dummy forward on an
+            # ss_tot is rebuilt at log time from sum(y^2) and sum(y): around
+            # each batch's own mean it held within-batch variance only, which
+            # read the pooled r2 strongly negative.
         untargeted batch for DDP symmetry) with a (P, 4) label.
 
         Returns (loss_term, huber_or_None, (ss_res (4,), ss_tot (4,)) or None,
@@ -926,6 +928,7 @@ class Distiller:
             running_geo_batches = torch.zeros((), device=device)
         nonfinite = 0
 
+            running_proprio_sumy = torch.zeros((), device=device)
         # Loop over mini-batches
         if self.rank == 0 or self.rank is None:
             bar_format = "{desc:<5.5}{percentage:3.0f}%|{bar:50}{r_bar}"
@@ -1038,7 +1041,9 @@ class Distiller:
                     running_decorr_r2 += decorr_r2
                     decorr_r2_count += 1
                 if self.proprio_enabled and proprio_stats is not None:
-                    running_proprio_huber += proprio_stats[0]
+                    # sum over points, not a sum of batch means: the same
+                    # estimator as constant_bound
+                    running_proprio_huber += proprio_stats[0] * proprio_stats[2]
                     running_proprio_ssres += proprio_stats[1][0]
                     running_proprio_sstot += proprio_stats[1][1]
                     running_proprio_n += proprio_stats[2]
@@ -1066,6 +1071,7 @@ class Distiller:
 
             # Logs
             if it % print_freq == print_freq - 1 or it == len(loader) - 1:
+                    running_proprio_sumy += proprio_stats[1][2]
                 # Gather scores
                 stats = [running_loss, running_total, running_div_k, running_div_q]
                 if self.position_enabled:
@@ -1102,6 +1108,7 @@ class Distiller:
                     if self.position_enabled:
                         pos_mse_r = out[cursor].item() / self.world_size / (it + 1)
                         pos_r2_r = out[cursor + 1] / self.world_size / (it + 1)
+                        running_proprio_sumy,
                         cursor += 2
                     decorr_r2_r = None
                     if self.decorr_enabled:
@@ -1122,7 +1129,7 @@ class Distiller:
                         # conclusions from one number. So difference the
                         # allreduced sums against the previous log point and
                         # report the window.
-                        cur = [out[cursor + j].item() for j in range(5)]
+                        cur = [out[cursor + j].item() for j in range(6)]
                         if prev_proprio is None:
                             win = cur
                         else:
@@ -1135,7 +1142,7 @@ class Distiller:
                             win = cur
                         n_lab = max(win[4], 1.0)
                         ss_res = win[1]
-                        ss_tot = win[2]
+                        ss_tot = win[2] - win[5] ** 2 / max(win[3], 1.0)
                         # POOLED r2: sums accumulated across batches and ranks,
                         # divided once here. No clamp, no epsilon, and immune to
                         # the single-valued batches that made the old per-batch
@@ -1143,7 +1150,7 @@ class Distiller:
                         # label variance has accumulated to make it meaningful.
                         pooled_r2 = (1.0 - ss_res / ss_tot) if ss_tot > 1e-6 else None
                         proprio_r = (
-                            win[0] / n_lab,   # mean huber over the window
+                            win[0] / max(win[3], 1.0),  # point-weighted huber over the window
                             pooled_r2,        # POOLED r2 over the window
                             win[3] / n_lab,   # mean pts / labeled batch
                         )
@@ -1160,7 +1167,7 @@ class Distiller:
                              for j in range(GeoHead.N_TARGETS)],
                             out[cursor + 3].item() / nb,
                         )
-                        cursor += 5
+                        cursor += 6
                     # Print score
                     self.print_log(
                         loss_r,
@@ -1218,8 +1225,8 @@ class Distiller:
                             writer.add_scalar(
                                 header + "/proprio_pts_per_batch", proprio_r[2], step
                             )
-                            # The acceptance criterion, as a curve: negative
-                            # means the head is beating a constant predictor.
+                            # The acceptance criterion, as a curve: POSITIVE
+                            # (bound - huber) means the head beats a constant.
                             writer.add_scalar(
                                 header + "/proprio_huber_margin",
                                 self.proprio_bound - proprio_r[0],
