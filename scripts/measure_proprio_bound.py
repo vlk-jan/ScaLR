@@ -51,6 +51,8 @@ ap.add_argument("--alt_name", default="FRAME-FIXED", help="label for the --alt_t
 ap.add_argument("--frames", type=int, default=2500)
 ap.add_argument("--helhest_keyframes", default=None, help="HELHEST keyframe list to sample from (default: the loader's keyframes.lst)")
 ap.add_argument("--seed", type=int, default=0)
+ap.add_argument("--dataset", default="robotics", help="robotics, or robotics_v2 to include <path_dataset>/HELHEST_V2")
+ap.add_argument("--helhest_v2_labels", default=None, help="robotics_v2 only: refuse | ignore | read (HelhestV2Distill.PROPRIO_LABEL_MODES)")
 # This script measures the bound THROUGH the real __getitem__, so it hits
 # ImPcDataset._check_aspect, which now raises on an aspect mismatch. The
 # bound depends on the LABELS, not on the image, so a stretched camera does
@@ -81,7 +83,9 @@ kwargs = dict(
 )
 if a.helhest_keyframes:
     kwargs["helhest_keyframes"] = a.helhest_keyframes
-ds = LIST_DATASETS_DISTILL["robotics"](phase="train", **kwargs)
+if a.helhest_v2_labels:
+    kwargs["helhest_v2_proprio_labels"] = a.helhest_v2_labels
+ds = LIST_DATASETS_DISTILL[a.dataset](phase="train", **kwargs)
 print(f"dataset: {len(ds)} samples")
 
 
@@ -180,7 +184,7 @@ def harvest(alt):
             out = ds[int(i)]
         except Exception:
             continue
-        lab, msk = out[-2], out[-1]  # proprio_label, proprio_mask
+        lab, msk = out[6], out[7]  # proprio_label, proprio_mask (geo_label, geo_mask follow)
         lab = np.asarray(lab); msk = np.asarray(msk, dtype=bool)
         if msk.any():
             v = lab[msk]
