@@ -278,6 +278,30 @@ class HelhestSemSeg(PCDataset):
 
         return pc, labels, self.list_keyframes[index][0].split("/")[-1]
 
+def read_proprio_npz(path, pc):
+    """(label, mask) per point of `pc` (base_link) from one DRIFT label file,
+    or None if the file does not exist. Shared with the v2 loader: the format
+    and the binning are DRIFT's for both rigs (see load_proprio_labels)."""
+    if not os.path.exists(path):
+        return None
+    d = np.load(path)
+    comp = d["comp"].astype(np.float32)
+    valid = d["valid"]
+    res = float(d["res"])
+    n = comp.shape[-1]
+    center = (n - 1) / 2.0
+
+    xy = pc[:, :3] @ d["R_align"].astype(np.float32).T
+    row = np.rint(xy[:, 0] / res + center).astype(np.int64)
+    col = np.rint(xy[:, 1] / res + center).astype(np.int64)
+    inb = (row >= 0) & (row < n) & (col >= 0) & (col < n)
+    row_c = np.clip(row, 0, n - 1)
+    col_c = np.clip(col, 0, n - 1)
+    mask = inb & valid[row_c, col_c]
+    label = np.where(mask, comp[row_c, col_c], 0.0).astype(np.float32)
+    return label, mask
+
+
 class HelhestDistill(ImPcDataset):
     # base_link. A raw-frame (unmanifested) root sits elsewhere and is refused
     # in __init__ if height normalisation is on.
@@ -368,25 +392,7 @@ class HelhestDistill(ImPcDataset):
             # aux loss sees nothing and the distillation loss is untouched.
             self._n_excluded += 1
             return None
-        path = os.path.join(self.rootdir, scene, "proprio_labels", f"{stem}.npz")
-        if not os.path.exists(path):
-            return None
-        d = np.load(path)
-        comp = d["comp"].astype(np.float32)
-        valid = d["valid"]
-        res = float(d["res"])
-        n = comp.shape[-1]
-        center = (n - 1) / 2.0
-
-        xy = pc[:, :3] @ d["R_align"].astype(np.float32).T
-        row = np.rint(xy[:, 0] / res + center).astype(np.int64)
-        col = np.rint(xy[:, 1] / res + center).astype(np.int64)
-        inb = (row >= 0) & (row < n) & (col >= 0) & (col < n)
-        row_c = np.clip(row, 0, n - 1)
-        col_c = np.clip(col, 0, n - 1)
-        mask = inb & valid[row_c, col_c]
-        label = np.where(mask, comp[row_c, col_c], 0.0).astype(np.float32)
-        return label, mask
+        return read_proprio_npz(os.path.join(self.rootdir, scene, "proprio_labels", f"{stem}.npz"), pc)
 
     def map_pc_to_image(self, pc, index, min_dist=0.25):
         """Returns the FULL cloud plus pairing_points -- integer indices of the

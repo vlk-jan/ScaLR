@@ -100,7 +100,7 @@ def get_datasets(config, args):
             f"withhold."
         )
     # What the v2 loader does with a proprio label tree in its root
-    # (proprio_supervision.helhest_v2_labels: refuse | ignore); absent = refuse.
+    # (proprio_supervision.helhest_v2_labels: refuse | ignore | read); absent = refuse.
     # Lives next to constant_bound because it says which labels the bound
     # describes. See HelhestV2Distill.PROPRIO_LABEL_MODES.
     v2pl = (config.get("proprio_supervision") or {}).get("helhest_v2_labels")

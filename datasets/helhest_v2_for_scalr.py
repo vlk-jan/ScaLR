@@ -63,6 +63,7 @@ import numpy as np
 import yaml
 from PIL import Image
 
+from .helhest_for_scalr import read_proprio_npz
 from .im_pc_dataset import ImPcDataset
 
 RIG = "helhest_v2_odin1_fixposition"
@@ -149,13 +150,16 @@ class HelhestV2Distill(ImPcDataset):
 
     # What to do with a <scene>/proprio_labels tree in the root. "refuse" (the
     # default) raises; "ignore" feeds every v2 frame to the aux loss with an
-    # empty mask, exactly as v8 did on a label-less root. Since HELHEST_v2_2 the
+    # empty mask, exactly as v8 did on a label-less root; "read" trains on them
+    # through v1's reader (same DRIFT format and binning). Since HELHEST_v2_2 the
     # roots carry DRIFT's labels for this rig, and the user's decision of
-    # 2026-09-30 is not to train the aux head on them: they are 5-10x v1.5's
-    # (0.07 m on cobbles -- the accepted ~2 deg receiver pitch and the wheel
-    # radius are in them) under a constant_bound measured on v1.5. Reading them
-    # is v1's load_proprio_labels, format for format, once that changes.
-    PROPRIO_LABEL_MODES = ("refuse", "ignore")
+    # 2026-09-30 was not to train on the v2.2-v2.4 ones: 5-10x v1.5's (0.07 m on
+    # cobbles -- the ~2 deg receiver pitch and the wheel radius are in them).
+    # v2.5's are regenerated against the v2 robot model (helhest_v2_median,
+    # wheel radius 0.334, heightmap datum offset 0.032 m; median 0.021 m on
+    # valid cells against v1.5's 0.013), and "read" accepts only files stamped
+    # with that model, so the rejected labels cannot come back by a symlink.
+    PROPRIO_LABEL_MODES = ("refuse", "ignore", "read")
 
     def __init__(self, keyframes_file=KEYFRAMES_FILE, crop_rows=CROP_ROWS, proprio_labels="refuse", **kwargs):
         super().__init__(**kwargs)
@@ -186,6 +190,9 @@ class HelhestV2Distill(ImPcDataset):
                 f"without them (v2 frames then reach the aux loss with an empty mask, as in v8)."
             )
 
+        if self.proprio_labels == "read":
+            self._check_label_stamp(scene0)
+
         self.crop_rows = tuple(crop_rows) if crop_rows is not None else None
         self.body_mask = np.array(Image.open(BODY_MASK).convert("L")) > 0
         self._calib = {}
@@ -196,8 +203,30 @@ class HelhestV2Distill(ImPcDataset):
     def load_pc(self, index):
         return clean_cloud(np.load(os.path.join(self.rootdir, self.list_keyframes[index][0])))
 
+    def _check_label_stamp(self, scene):
+        """Refuse labels generated without the v2 robot model (v2.4 and older).
+        Checked once here: __getitem__ retries on any exception, so a per-frame
+        raise would only redraw frames."""
+        ldir = os.path.join(self.rootdir, scene, "proprio_labels")
+        files = sorted(os.listdir(ldir)) if os.path.isdir(ldir) else []
+        if not files:
+            raise FileNotFoundError(f"proprio_labels='read', but {ldir} holds no label files.")
+        d = np.load(os.path.join(ldir, files[0]))
+        robot = str(d["robot"]) if "robot" in d.files else None
+        version = str(d["dataset_version"]) if "dataset_version" in d.files else "?"
+        if robot is None or "heightmap_datum_offset" not in d.files:
+            raise ValueError(
+                f"{ldir}/{files[0]} (dataset_version {version}) carries no robot model or "
+                f"datum offset: these are the pre-v2.5 labels the 2026-09-30 decision "
+                f"rejected. Point HELHEST_V2 at HELHEST_v2_5 or use helhest_v2_labels: ignore."
+            )
+
     def load_proprio_labels(self, index, pc):
-        return None
+        if self.proprio_labels != "read":
+            return None
+        rel = self.list_keyframes[index][0]
+        scene, stem = rel.split("/")[0], os.path.splitext(os.path.basename(rel))[0]
+        return read_proprio_npz(os.path.join(self.rootdir, scene, "proprio_labels", f"{stem}.npz"), pc)
 
     def calibration(self, scene):
         """(K, D, T_base_to_cam) for a scene -- per scene, see the docstring."""
