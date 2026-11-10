@@ -110,9 +110,18 @@ class ImPcDataset(PCDataset):
         max_pairs=None,
         geo_targets_root=None,
         geo_min_count=8,
+        geo_height_gate=False,
+        geo_zmin_relative=False,
         **kwargs,
     ):
         super().__init__(**kwargs)
+
+        # See load_geo_labels. Both off = v10's targets.
+        self.geo_height_gate = bool(geo_height_gate)
+        self.geo_zmin_relative = bool(geo_zmin_relative)
+        if self.geo_zmin_relative and not self.geo_height_gate:
+            # ungated, the relative target puts half the geo loss on canopy height
+            raise ValueError("geo_supervision.zmin_relative needs height_gate")
 
         # Close-up geometry targets (scripts/write_geo_targets.py), see
         # load_geo_labels. None = the geo auxiliary is off.
@@ -221,11 +230,20 @@ class ImPcDataset(PCDataset):
         r, c = np.clip(r, 0, g - 1), np.clip(c, 0, g - 1)
         mask = inb & (count[r, c] >= self.geo_min_count)
         zmin = d["zmin"].astype(np.float32)
+        if self.geo_height_gate:
+            # The targets' own rule (write_geo_targets.py CAP): returns above
+            # it are canopy the cell statistics do not describe (35 % of
+            # Odin1 geo points).
+            mask &= pc[:, 2] <= zmin[r, c] + float(d["cap"])
         lab = np.stack(
             [zmin[r, c], (d["zmax"].astype(np.float32) - zmin)[r, c],
              d["zstd"].astype(np.float32)[r, c], d["frac_above"].astype(np.float32)[r, c]],
             axis=1,
         )
+        if self.geo_zmin_relative:
+            # Floor relative to the point: near the ground the absolute zmin
+            # is a copy of the input z (99 % of its variance on v2).
+            lab[:, 0] -= pc[:, 2]
         lab[~mask] = 0.0
         return lab, mask
 

@@ -69,6 +69,8 @@ def get_datasets(config, args):
             else None
         ),
         "geo_min_count": (config.get("geo_supervision") or {}).get("min_count", 8),
+        "geo_height_gate": (config.get("geo_supervision") or {}).get("height_gate", False),
+        "geo_zmin_relative": (config.get("geo_supervision") or {}).get("zmin_relative", False),
         # ImPcDataset._check_aspect RAISES when im_size's aspect differs from
         # the camera's; this accepts the stretch deliberately.
         "allow_aspect_mismatch": getattr(args, "allow_aspect_mismatch", False),
@@ -198,6 +200,7 @@ def distributed_training(gpu, ngpus_per_node, args, config):
         nb_class=config["point_backbone"]["nb_class"],
         layer_norm=config["point_backbone"]["layernorm"],
     )
+    model_point.embed.masked_bn = config["point_backbone"].get("masked_bn", False)
     model_image = ImageTeacher(config)
 
     # ---
@@ -210,7 +213,6 @@ def distributed_training(gpu, ngpus_per_node, args, config):
         torch.cuda.set_device(args.gpu)
         model_point.cuda(args.gpu)
         model_image.cuda(args.gpu)
-    model_point.embed.masked_bn = config["point_backbone"].get("masked_bn", False)
         # When using a single GPU per process and per
         # DistributedDataParallel, we need to divide the batch size
         # ourselves based on the total number of GPUs of the current node.
@@ -325,10 +327,10 @@ def distributed_training(gpu, ngpus_per_node, args, config):
         proprio_cfg=proprio_cfg,
         geo_cfg=geo_cfg,
         print_freq=config.get("dataloader", {}).get("print_freq"),
-    )
-    if args.restart:
         intensity_dropout=(config.get("augmentations") or {}).get("intensity_dropout", 0.0),
         ckpt_meta={"config": config, "args": vars(args), "git_commit": _git_commit()},
+    )
+    if args.restart:
         mng.load_state()
     elif args.warm_start_ckpt:
         mng.load_weights_only(
