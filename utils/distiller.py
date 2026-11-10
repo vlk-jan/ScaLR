@@ -13,6 +13,7 @@
 # limitations under the License.
 
 
+import os
 import sys
 import torch
 import warnings
@@ -266,6 +267,8 @@ class Distiller:
         proprio_cfg=None,
         geo_cfg=None,
         print_freq=None,
+        intensity_dropout=0.0,
+        ckpt_meta=None,
     ):
 
         # Optim. methods
@@ -517,6 +520,16 @@ class Distiller:
         # Checkpoints
         self.current_epoch = 0
         self.path_to_ckpt = path
+        # Config, CLI args and commit, saved with the weights: grid, fov and
+        # AMP mode change the function without changing any tensor shape.
+        self.ckpt_meta = ckpt_meta or {}
+
+        # Probability, per sample, of feeding the intensity channel as a
+        # constant (the input BN's running mean, i.e. what DRIFT's
+        # const_intensity feeds), so the backbone is trained for that mode.
+        self.intensity_dropout = float(intensity_dropout)
+        if self.intensity_dropout > 0:
+            assert input_features[0] == "intensity", input_features
 
         # Monitoring
         if tensorboard and (self.rank == 0 or self.rank is None):
@@ -750,6 +763,9 @@ class Distiller:
             # the head, which is why nobody saw it had not learned. Pooling
             # numerator and denominator and dividing ONCE at log time needs no
             # clamp and no epsilon.
+            # ss_tot is rebuilt at log time from sum(y^2) and sum(y): around
+            # each batch's own mean it held within-batch variance only, which
+            # read the pooled r2 strongly negative.
             ss_res = ((pred - y_lab) ** 2).sum()
         return (
             self.proprio_weight * huber,
@@ -762,9 +778,6 @@ class Distiller:
         """Masked Huber between GeoHead(student features) and the close-up
         geometry targets, over the targeted points of the batch; the proprio
         contract (per-sample unpadded label/mask, dummy forward on an
-            # ss_tot is rebuilt at log time from sum(y^2) and sum(y): around
-            # each batch's own mean it held within-batch variance only, which
-            # read the pooled r2 strongly negative.
         untargeted batch for DDP symmetry) with a (P, 4) label.
 
         Returns (loss_term, huber_or_None, (ss_res (4,), ss_tot (4,)) or None,
@@ -915,6 +928,7 @@ class Distiller:
             running_proprio_sstot = torch.zeros((), device=device)
             running_proprio_n = torch.zeros((), device=device)
             running_proprio_batches = torch.zeros((), device=device)
+            running_proprio_sumy = torch.zeros((), device=device)
             # Snapshot of the five allreduced proprio sums at the PREVIOUS
             # log point, so each print can report the window since that point
             # instead of the epoch-to-date mean. See the WINDOWED block below
@@ -928,7 +942,6 @@ class Distiller:
             running_geo_batches = torch.zeros((), device=device)
         nonfinite = 0
 
-            running_proprio_sumy = torch.zeros((), device=device)
         # Loop over mini-batches
         if self.rank == 0 or self.rank is None:
             bar_format = "{desc:<5.5}{percentage:3.0f}%|{bar:50}{r_bar}"
@@ -946,6 +959,10 @@ class Distiller:
 
             # Input to point network
             feat = batch["feat"].cuda(self.rank, non_blocking=True)
+            if self.intensity_dropout > 0:
+                drop = torch.rand(feat.shape[0], device=feat.device) < self.intensity_dropout
+                bn = getattr(self.model_point, "module", self.model_point).embed.norm
+                feat[drop, 0] = bn.running_mean[0].to(feat.dtype)
             keys = ["pairing_points", "pairing_images"]
             if self.proprio_enabled:
                 keys += ["proprio_labels", "proprio_masks"]
@@ -1029,6 +1046,12 @@ class Distiller:
             # optimizer here would poison the weights permanently, and the run
             # would carry on to the end looking like it had trained.
             finite = bool(torch.isfinite(loss))
+            if self.train_sampler is not None:
+                # every rank skips the same step: one rank skipping backward()
+                # alone leaves the others waiting in DDP's gradient all-reduce
+                ok = torch.tensor(float(finite), device=loss.device)
+                torch.distributed.all_reduce(ok, op=torch.distributed.ReduceOp.MIN)
+                finite = bool(ok)
             if finite:
                 running_loss += distill
                 running_total += loss.detach()
@@ -1048,6 +1071,7 @@ class Distiller:
                     running_proprio_sstot += proprio_stats[1][1]
                     running_proprio_n += proprio_stats[2]
                     running_proprio_batches += 1
+                    running_proprio_sumy += proprio_stats[1][2]
                 if self.geo_enabled and geo_stats is not None:
                     running_geo_huber += geo_stats[0]
                     running_geo_ssres += geo_stats[1][0]
@@ -1071,7 +1095,6 @@ class Distiller:
 
             # Logs
             if it % print_freq == print_freq - 1 or it == len(loader) - 1:
-                    running_proprio_sumy += proprio_stats[1][2]
                 # Gather scores
                 stats = [running_loss, running_total, running_div_k, running_div_q]
                 if self.position_enabled:
@@ -1085,6 +1108,7 @@ class Distiller:
                         running_proprio_sstot,
                         running_proprio_n,
                         running_proprio_batches,
+                        running_proprio_sumy,
                     ]
                 if self.geo_enabled:
                     stats += [
@@ -1108,7 +1132,6 @@ class Distiller:
                     if self.position_enabled:
                         pos_mse_r = out[cursor].item() / self.world_size / (it + 1)
                         pos_r2_r = out[cursor + 1] / self.world_size / (it + 1)
-                        running_proprio_sumy,
                         cursor += 2
                     decorr_r2_r = None
                     if self.decorr_enabled:
@@ -1154,7 +1177,7 @@ class Distiller:
                             pooled_r2,        # POOLED r2 over the window
                             win[3] / n_lab,   # mean pts / labeled batch
                         )
-                        cursor += 5
+                        cursor += 6
                     geo_r = None
                     if self.geo_enabled:
                         # Epoch-to-date means over the batches that carried
@@ -1167,7 +1190,7 @@ class Distiller:
                              for j in range(GeoHead.N_TARGETS)],
                             out[cursor + 3].item() / nb,
                         )
-                        cursor += 6
+                        cursor += 5
                     # Print score
                     self.print_log(
                         loss_r,
@@ -1434,8 +1457,11 @@ class Distiller:
             if self.geo_enabled:
                 dict_to_save["geo_head"] = self.geo_head.state_dict()
                 dict_to_save["geo_optim"] = self.geo_optim.state_dict()
+            dict_to_save.update(self.ckpt_meta)
             filename = self.path_to_ckpt + "/ckpt_last.pth"
-            torch.save(dict_to_save, filename)
+            # the run's only checkpoint: a kill mid-write must not truncate it
+            torch.save(dict_to_save, filename + ".tmp")
+            os.replace(filename + ".tmp", filename)
 
     def train(self):
         for _ in range(self.current_epoch, self.max_epoch):

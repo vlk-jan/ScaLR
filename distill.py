@@ -14,6 +14,7 @@
 
 
 import os
+import subprocess
 import yaml
 import torch
 import random
@@ -25,6 +26,15 @@ from utils.scheduler import WarmupCosine
 from datasets import LIST_DATASETS_DISTILL, CollateDistillation
 from utils.distiller import Distiller
 from models.image_teacher import ImageTeacher
+
+
+def _git_commit():
+    try:
+        return subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=os.path.dirname(os.path.abspath(__file__)), text=True
+        ).strip()
+    except Exception:
+        return None
 
 
 def load_model_config(file):
@@ -317,6 +327,8 @@ def distributed_training(gpu, ngpus_per_node, args, config):
         print_freq=config.get("dataloader", {}).get("print_freq"),
     )
     if args.restart:
+        intensity_dropout=(config.get("augmentations") or {}).get("intensity_dropout", 0.0),
+        ckpt_meta={"config": config, "args": vars(args), "git_commit": _git_commit()},
         mng.load_state()
     elif args.warm_start_ckpt:
         mng.load_weights_only(
