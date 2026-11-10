@@ -97,7 +97,11 @@ class ImageTeacher(nn.Module):
 
         # Create decoder - Just upsampling in our case
         self.decoder = nn.Upsample(
-            scale_factor=patch_size, mode="bilinear", align_corners=True
+            scale_factor=patch_size, mode="bilinear",
+            # True (upstream, v10 and older) reads a point's target up to 0.47
+            # patch towards the image centre; False puts patch centres where
+            # the pixels are.
+            align_corners=config["image_backbone"].get("align_corners", True),
         )
 
         # Teacher must stay frozen
