@@ -191,7 +191,8 @@ class HelhestV2Distill(ImPcDataset):
             )
 
         if self.proprio_labels == "read":
-            self._check_label_stamp(scene0)
+            for scene in sorted({r[0].split("/")[0] for r in self.list_keyframes}):
+                self._check_label_stamp(scene)
 
         self.crop_rows = tuple(crop_rows) if crop_rows is not None else None
         self.body_mask = np.array(Image.open(BODY_MASK).convert("L")) > 0

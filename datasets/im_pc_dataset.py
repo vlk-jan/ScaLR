@@ -376,13 +376,19 @@ class ImPcDataset(PCDataset):
     def __getitem__(self, index):
         # Outside the retry loop below, which swallows every exception.
         dz = self.height_shift()
-        for _ in range(8):
+        # Rejection sampling: RELLIS OS1 loses its pairs to the random point
+        # limit in ~16 % of draws.
+        for _ in range(32):
             try:
                 # Load original point cloud
                 pc = self.load_pc(index)
+                # clean_cloud leaves ~0.5 % of Odin1 keyframes (nearly) empty, and
+                # the voxeliser breaks on a one-point cloud
+                assert pc.ndim == 2 and len(pc) > self.num_neighbors, f"Only {len(pc)} points loaded. Index {index}"
 
                 # Voxelization
                 pc, _ = self.downsample(pc, None)
+                assert pc.shape[0] > self.num_neighbors, f"Only {pc.shape[0]} points available. Index {index}"
 
                 # Project point cloud to image. map_pc_to_image returns the
                 # FULL cloud plus pairing_points, the indices of the
@@ -411,7 +417,7 @@ class ImPcDataset(PCDataset):
                 # to keep. Only the backbone's input got bigger.
                 pc, images, pairing_images, pairing_points = self.map_pc_to_image(pc, index)
                 images = torch.tensor(np.array(images, dtype=np.float32).transpose(0, 3, 1, 2))
-                assert len(pairing_images) > 0, f"No points project into the image. For {self.list_keyframes[index][0]}"
+                assert len(pairing_images) > 0, f"No points project into the image. Index {index}"
 
                 # Cap the pairs. The distillation loss is one mean over every
                 # pair in the batch, so a frame's weight in the gradient is its
@@ -482,8 +488,7 @@ class ImPcDataset(PCDataset):
                 geo_label = geo_label[idx]
                 geo_mask = geo_mask[idx]
                 assert pairing_points.shape[0] > 0, (
-                    f"No paired points survive the fov crop. For "
-                    f"{self.list_keyframes[index][0]}"
+                    f"No paired points survive the fov crop. Index {index}"
                 )
 
                 # Get point features
@@ -494,10 +499,14 @@ class ImPcDataset(PCDataset):
 
                 # Embedding
                 kdtree = KDTree(pc[:, :3])
-                assert pc.shape[0] > self.num_neighbors, f"Only {pc.shape[0]} points available. For {self.list_keyframes[index][0]}"
+                assert pc.shape[0] > self.num_neighbors, f"Only {pc.shape[0]} points available. Index {index}"
                 break
-            except Exception as e:
+            except AssertionError:  # messages must not raise: name frames by index
+                # Only the expected rejections; anything else is a bug or a
+                # broken file and must stop the run.
                 index = np.random.randint(len(self))
+        else:
+            raise RuntimeError(f"{type(self).__name__}: 32 consecutive frames rejected, last index {index}")
         _, neighbors = kdtree.query(pc[:, :3], k=self.num_neighbors + 1)
 
         out = (

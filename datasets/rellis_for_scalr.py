@@ -3,6 +3,7 @@
 # Based on code from Valeo Comfort and Driving Assistance - valeo.ai
 
 import os
+import re
 
 import yaml
 import numpy as np
@@ -134,6 +135,11 @@ class RellisDistill(ImPcDataset):
             ),
             dtype=str,
         )
+        # pt_train_vel.lst lacks 7 frames of im_train.lst, so pairing by row put
+        # 2,056 Velodyne clouds on the wrong image: pair by (scene, frame id).
+        key = lambda p: (p.split("/")[0], re.search(r"\d{6}", os.path.basename(p)).group())
+        by_frame = {key(r[0]): r for r in self.list_img}
+        self.list_img = np.array([by_frame[key(r[0])] for r in self.list_lidar])
 
     def __len__(self):
         return len(self.list_lidar)
