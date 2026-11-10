@@ -200,6 +200,7 @@ def distributed_training(gpu, ngpus_per_node, args, config):
         torch.cuda.set_device(args.gpu)
         model_point.cuda(args.gpu)
         model_image.cuda(args.gpu)
+    model_point.embed.masked_bn = config["point_backbone"].get("masked_bn", False)
         # When using a single GPU per process and per
         # DistributedDataParallel, we need to divide the batch size
         # ourselves based on the total number of GPUs of the current node.

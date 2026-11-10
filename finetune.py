@@ -248,6 +248,8 @@ def distributed_training(gpu, ngpus_per_node, args, config):
         drop_path_prob=config["waffleiron"]["drop_path"],
         layer_norm=config["waffleiron"]["layernorm"],
     )
+    # set for backbones pretrained with point_backbone.masked_bn (v11+)
+    model.embed.masked_bn = config["embedding"].get("masked_bn", False)
     if args.pretrained_ckpt != "":
         # Load pretrained model
         ckpt = torch.load(args.pretrained_ckpt, map_location="cpu", weights_only=False)
